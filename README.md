@@ -21,7 +21,7 @@
 > ## 🔱 About this fork
 >
 > This is a continuation of **[ChoiVadim/klas_notification_bot](https://github.com/ChoiVadim/klas_notification_bot)**,
-> created by [Tsoi Vadim](https://github.com/ChoiVadim). The original design, the KLAS
+> created by [Choi Vadim](https://github.com/ChoiVadim). The original design, the KLAS
 > integration and virtually all of the implementation are his work.
 >
 > I ([Maksim Tyan](https://github.com/snowing152)) took over maintenance **with the
@@ -29,7 +29,7 @@
 > continue development from here. The upstream repository remains the origin of this
 > project and is credited in [LICENSE](LICENSE).
 >
-> Issues and pull requests about *this* instance belong here; the original repository is
+> Issues and pull requests about _this_ instance belong here; the original repository is
 > not maintained by me.
 
 ---
@@ -41,6 +41,7 @@
 <td width="50%">
 
 ### 📚 **Academic Management**
+
 - 📋 **KLAS Integration** - View assignments, lectures, quizzes
 - ⏰ **Smart Notifications** - Never miss a deadline
 - 📊 **Student Dashboard** - Track your academic progress
@@ -50,6 +51,7 @@
 <td width="50%">
 
 ### 🏫 **Campus Services**
+
 - 🍽️ **Dining Menu** - Daily cafeteria updates
 - 📰 **Campus News** - Latest KW announcements
 - 📱 **Library QR** - Quick library access codes
@@ -60,6 +62,7 @@
 </table>
 
 ### 🌍 **Multi-Language Support**
+
 - 🇺🇸 English
 - 🇰🇷 Korean (한국어)
 - 🇷🇺 Russian (Русский)
@@ -177,52 +180,57 @@ graph TD
 
 ### 🧩 Core Components
 
-| Component | Description |
-|-----------|-------------|
-| **🤖 Bot Core** | `app/bot.py` - aiogram Bot & Dispatcher setup |
-| **🔗 Handlers** | `app/handlers/` - Message routing & processing |
+| Component       | Description                                            |
+| --------------- | ------------------------------------------------------ |
+| **🤖 Bot Core** | `app/bot.py` - aiogram Bot & Dispatcher setup          |
+| **🔗 Handlers** | `app/handlers/` - Message routing & processing         |
 | **⚙️ Services** | `app/services/` - KLAS, Library, News, AI integrations |
-| **💾 Database** | `app/database/` - User data & settings storage |
-| **🛡️ Security** | `app/utils/encryption.py` - Password encryption |
+| **💾 Database** | `app/database/` - User data & settings storage         |
+| **🛡️ Security** | `app/utils/encryption.py` - Password encryption        |
 
 ---
 
 ## 🎮 Commands & Usage
 
 ### 📋 **Academic Commands**
-| Command | Description |
-|---------|-------------|
-| `/start` | 🏁 Welcome message & quick access menu |
-| `/register` | 🔐 Login to KLAS system |
-| `/show` | 📚 View assignments & deadlines |
-| `/info` | 👤 Student information dashboard |
+
+| Command     | Description                            |
+| ----------- | -------------------------------------- |
+| `/start`    | 🏁 Welcome message & quick access menu |
+| `/register` | 🔐 Login to KLAS system                |
+| `/show`     | 📚 View assignments & deadlines        |
+| `/info`     | 👤 Student information dashboard       |
 
 ### 🏫 **Campus Services**
-| Command | Description |
-|---------|-------------|
-| `/menu` | 🍽️ Today's cafeteria menu |
-| `/news` | 📰 Latest campus news |
-| `/qr` | 📱 Generate library QR code |
-| `/lregister` | 📚 Login to library system |
+
+| Command          | Description                     |
+| ---------------- | ------------------------------- |
+| `/menu`          | 🍽️ Today's cafeteria menu       |
+| `/news`          | 📰 Latest campus news           |
+| `/qr`            | 📱 Generate library QR code     |
+| `/lregister`     | 📚 Login to library system      |
 | `/search <book>` | 🔍 Search the library catalogue |
 
 ### ⚙️ **Settings**
-| Command | Description |
-|---------|-------------|
-| `/language` | 🌍 Change interface language (requires registration to persist) |
-| `/unregister` | 🗑️ Delete stored credentials |
-| `/donate` | 💝 Support the developer |
-| `/refund` | ↩️ Refund a donation (reply to the payment message) |
+
+| Command       | Description                                                     |
+| ------------- | --------------------------------------------------------------- |
+| `/language`   | 🌍 Change interface language (requires registration to persist) |
+| `/unregister` | 🗑️ Delete stored credentials                                    |
+| `/donate`     | 💝 Support the developer                                        |
+| `/refund`     | ↩️ Refund a donation (reply to the payment message)             |
 
 ### 🔑 **Admin Only**
-| Command | Description |
-|---------|-------------|
+
+| Command   | Description                                                           |
+| --------- | --------------------------------------------------------------------- |
 | `/notify` | 📢 Broadcast to all users, e.g. `/notify en: Hello \| ko: 안녕하세요` |
 
 Only the Telegram account matching `ADMIN_ID` in `.env` can use this. Each user receives
 the version matching their language, falling back to the `en:` text.
 
 ### 🤖 **AI Assistant**
+
 Simply send any text message to chat with the AI about university life!
 
 ---
@@ -253,6 +261,7 @@ pytest tests/integration/ -v
 ```
 
 ### 📊 Test Coverage
+
 - **Unit Tests** - Database, strings, encryption, QR generation, news cache, admin broadcast
 - **Integration Tests** - Handlers, services
 
@@ -269,11 +278,13 @@ never touches your real `bot_users.db`.
    `/path/to/klas_notification_bot` placeholders with your real values.
 
 2. **Copy service file:**
+
 ```bash
 sudo cp botdaemon.service /etc/systemd/system/kwbot.service
 ```
 
 3. **Enable and start:**
+
 ```bash
 sudo systemctl daemon-reload
 sudo systemctl enable --now kwbot.service
@@ -281,6 +292,7 @@ sudo systemctl status kwbot.service
 ```
 
 4. **View logs:**
+
 ```bash
 sudo journalctl -u kwbot.service -f
 ```
@@ -296,14 +308,14 @@ service settings add a volume mounted at `/data`. 1 GB is plenty.
 
 **2. Set the variables:**
 
-| Variable | Value | Notes |
-|----------|-------|-------|
-| `BOT_TOKEN` | from [@BotFather](https://t.me/botfather) | |
-| `ADMIN_ID` | your numeric Telegram id | ask [@userinfobot](https://t.me/userinfobot) |
-| `GEMINI_API_KEY` | Google AI Studio key | optional, powers the AI chat |
-| `DATA_DIR` | `/data` | **required** — points the database at the volume |
-| `ENCRYPTION_KEY` | your Fernet key | **required** — see below |
-| `KW_TZ` | — | **leave unset.** Only to run on a timezone other than Seoul |
+| Variable         | Value                                     | Notes                                                       |
+| ---------------- | ----------------------------------------- | ----------------------------------------------------------- |
+| `BOT_TOKEN`      | from [@BotFather](https://t.me/botfather) |                                                             |
+| `ADMIN_ID`       | your numeric Telegram id                  | ask [@userinfobot](https://t.me/userinfobot)                |
+| `GEMINI_API_KEY` | Google AI Studio key                      | optional, powers the AI chat                                |
+| `DATA_DIR`       | `/data`                                   | **required** — points the database at the volume            |
+| `ENCRYPTION_KEY` | your Fernet key                           | **required** — see below                                    |
+| `KW_TZ`          | —                                         | **leave unset.** Only to run on a timezone other than Seoul |
 
 **3. `ENCRYPTION_KEY` is the one you cannot lose.** On an ephemeral filesystem the key
 file would be regenerated on each deploy, which makes every password already in the
@@ -319,7 +331,7 @@ Keep a copy somewhere safe. It is never recoverable from the database.
 
 > ⚠️ **Timezone.** KLAS reports every deadline in Korean local time and the bot compares
 > it against the local clock, so a UTC container would compute every deadline nine hours
-> off. `app/config.py` therefore *forces* `TZ=Asia/Seoul` at import — it overwrites
+> off. `app/config.py` therefore _forces_ `TZ=Asia/Seoul` at import — it overwrites
 > whatever the host set, because some platforms export `TZ=UTC` themselves and a mere
 > default would be silently ignored there. Setting `TZ` in your deploy has no effect;
 > the deliberate override is `KW_TZ`, and you almost certainly do not want it.
@@ -327,7 +339,7 @@ Keep a copy somewhere safe. It is never recoverable from the database.
 ### 📝 Logging
 
 The bot always logs to stdout, so Railway's dashboard (and `railway logs`) shows
-everything. On a self-hosted Linux box it *additionally* writes `logs/kwbot.log` inside
+everything. On a self-hosted Linux box it _additionally_ writes `logs/kwbot.log` inside
 the project directory (created automatically, and gitignored); that file handler is
 skipped on Railway, where the file would be lost on the next deploy anyway.
 
@@ -336,11 +348,11 @@ skipped on Railway, where the file would be lost on the next deploy anyway.
 These are deliberately untracked — carry them with the bot, or your users will have to
 register again:
 
-| Item | Why it matters |
-|------|----------------|
-| `bot_users.db` | All registered users and their encrypted credentials. On Railway, keep it on the mounted volume. |
+| Item           | Why it matters                                                                                                                    |
+| -------------- | --------------------------------------------------------------------------------------------------------------------------------- |
+| `bot_users.db` | All registered users and their encrypted credentials. On Railway, keep it on the mounted volume.                                  |
 | The Fernet key | **Lose it and every stored password becomes undecryptable.** `ENCRYPTION_KEY` env var, or `encryption_key.key` when self-hosting. |
-| `.env` | Bot token, Gemini key, admin ID |
+| `.env`         | Bot token, Gemini key, admin ID                                                                                                   |
 
 ---
 
@@ -388,30 +400,36 @@ pytest -v
 <summary><b>🔧 Common Issues</b></summary>
 
 ### Bot Won't Start
+
 - ✅ Check `BOT_TOKEN` in `.env`
 - ✅ Make sure `ADMIN_ID` is a number — a missing or placeholder value fails at startup
 - ✅ Verify `ENCRYPTION_KEY` is set, or that `encryption_key.key` exists (see the generation step above)
 - ✅ Ensure Python 3.10+ is installed
 
 ### KLAS Login Fails
+
 - ✅ Verify KW credentials
 - ✅ Check network connectivity
 - ✅ Try re-registering with `/register`
 
 ### AI Assistant Replies With An Error
+
 - ✅ Check `GEMINI_API_KEY` in `.env`
 - ✅ Check `logs/kwbot.log` — an expired model name shows up here as a 404
 
 ### `/qr` Doesn't Work
+
 - ✅ Register your library account first with `/lregister`
 - ✅ Make sure `Pillow` is installed (it renders the QR image)
 
 ### Missing Dependencies
+
 ```bash
 pip install --upgrade -r requirements.txt
 ```
 
 ### Permission Errors (Linux)
+
 ```bash
 sudo chown -R $USER:$USER /path/to/bot
 ```
