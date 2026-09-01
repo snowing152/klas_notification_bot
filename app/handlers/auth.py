@@ -12,7 +12,7 @@ from app.database.database import (
     save_user,
     save_library_user,
 )
-from app.strings import Strings, Language
+from app.strings import Strings
 from app.utils.language_utils import get_user_language_with_fallback
 
 

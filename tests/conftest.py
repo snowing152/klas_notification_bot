@@ -1,42 +1,46 @@
 import pytest
-import asyncio
+import pytest_asyncio
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
 from sqlalchemy.orm import sessionmaker
-from typing import Generator
 
+from app.database import database as db
 from app.database.models import Base
-from app.database.database import AsyncSessionLocal
-from app.strings import Language
-from app.config import settings
 
 
-@pytest.fixture(scope="function")
-def event_loop():
-    """Create an instance of the default event loop for each test case."""
-    policy = asyncio.get_event_loop_policy()
-    loop = policy.new_event_loop()
-    asyncio.set_event_loop(loop)
-    yield loop
-    loop.close()
-    asyncio.set_event_loop(None)
+@pytest_asyncio.fixture(scope="function", autouse=True)
+async def isolated_database(tmp_path, monkeypatch):
+    """Point every test at a throwaway SQLite file, never the production one.
 
-
-@pytest.fixture(scope="function")
-async def test_engine(event_loop):
-    """Create a test database engine."""
-    engine = create_async_engine(settings.DATABASE_URL, future=True, echo=True)
+    autouse matters here: the functions under test (save_user, get_user, ...)
+    resolve the module-level AsyncSessionLocal at call time, so a test that
+    forgot to request this fixture would happily write to bot_users.db.
+    """
+    engine = create_async_engine(
+        f"sqlite+aiosqlite:///{tmp_path / 'test.db'}", future=True
+    )
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+
+    session_factory = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+    monkeypatch.setattr(db, "engine", engine)
+    monkeypatch.setattr(db, "AsyncSessionLocal", session_factory)
+
     yield engine
+
     await engine.dispose()
 
 
-@pytest.fixture(scope="function")
-async def test_session(test_engine):
-    """Create a test database session."""
+@pytest_asyncio.fixture(scope="function")
+async def test_engine(isolated_database):
+    """Explicit alias for tests that want to name the dependency."""
+    return isolated_database
+
+
+@pytest_asyncio.fixture(scope="function")
+async def test_session(isolated_database):
+    """Session bound to the throwaway test database."""
     async_session = sessionmaker(
-        test_engine, class_=AsyncSession, expire_on_commit=False
+        isolated_database, class_=AsyncSession, expire_on_commit=False
     )
     async with async_session() as session:
         yield session
-        await session.rollback()

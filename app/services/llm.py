@@ -1,44 +1,40 @@
-import os
 import json
 import logging
 
 import textwrap
 import telegramify_markdown
-import google.generativeai as genai
+from google import genai
+from google.genai import types
+
+from app.config import settings
+
+MODEL = "gemini-3.6-flash"
+
+SAFETY_SETTINGS = [
+    types.SafetySetting(
+        category=category, threshold=types.HarmBlockThreshold.BLOCK_MEDIUM_AND_ABOVE
+    )
+    for category in (
+        types.HarmCategory.HARM_CATEGORY_HARASSMENT,
+        types.HarmCategory.HARM_CATEGORY_HATE_SPEECH,
+        types.HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT,
+        types.HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT,
+    )
+]
+
+# Built once instead of reconfiguring the SDK on every message. The key is
+# optional: genai.Client raises on an empty one, which used to take the whole bot
+# down at import time even though only the AI chat needs it.
+client = genai.Client(api_key=settings.GEMINI_API_KEY) if settings.GEMINI_API_KEY else None
 
 
 async def generate_response(message: str, chat_history: list[dict]):
-    genai.configure(api_key=os.getenv("GEMINI_API_TOKEN"))
-
-    # Create model with specific parameters for better responses
-    generation_config = {
-        "temperature": 0.2,  # Lower temperature for more factual responses
-        "top_p": 0.8,  # Control diversity
-        "top_k": 40,  # Consider more options for responses
-        "max_output_tokens": 2048,  # Allow longer responses if needed
-    }
-
-    safety_settings = [
-        {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_MEDIUM_AND_ABOVE"},
-        {
-            "category": "HARM_CATEGORY_HATE_SPEECH",
-            "threshold": "BLOCK_MEDIUM_AND_ABOVE",
-        },
-        {
-            "category": "HARM_CATEGORY_SEXUALLY_EXPLICIT",
-            "threshold": "BLOCK_MEDIUM_AND_ABOVE",
-        },
-        {
-            "category": "HARM_CATEGORY_DANGEROUS_CONTENT",
-            "threshold": "BLOCK_MEDIUM_AND_ABOVE",
-        },
-    ]
-
-    gemini = genai.GenerativeModel(
-        "gemini-2.0-flash",
-        generation_config=generation_config,
-        safety_settings=safety_settings,
-    )
+    if client is None:
+        logging.warning("GEMINI_API_KEY is not set; the AI assistant is disabled")
+        return format_response(
+            "The AI assistant is not configured right now. "
+            "All other commands still work — try /show or /info."
+        )
 
     # Structure university information as a knowledge base
     information = {
@@ -148,12 +144,27 @@ async def generate_response(message: str, chat_history: list[dict]):
         else:
             conversation_history += f"Assistant: {entry['content']}\n"
 
-    # Build complete prompt with history and system instructions
-    complete_prompt = f"{system_prompt}\n\nPrevious conversation:\n{conversation_history}\n\nUser: {message}\nAssistant:"
+    # The instructions and knowledge base belong in system_instruction rather
+    # than concatenated into the user's turn
+    prompt = f"Previous conversation:\n{conversation_history}\n\nUser: {message}"
 
-    # Use the standard generate_content method instead of chat
     try:
-        response = await gemini.generate_content_async(complete_prompt)
+        response = await client.aio.models.generate_content(
+            model=MODEL,
+            contents=prompt,
+            config=types.GenerateContentConfig(
+                system_instruction=system_prompt,
+                temperature=0.2,  # Lower temperature for more factual responses
+                top_p=0.8,  # Control diversity
+                top_k=40,  # Consider more options for responses
+                max_output_tokens=2048,  # Allow longer responses if needed
+                safety_settings=SAFETY_SETTINGS,
+                # No tools are passed; disabling avoids an SDK warning on every call
+                automatic_function_calling=types.AutomaticFunctionCallingConfig(
+                    disable=True
+                ),
+            ),
+        )
         return format_response(response.text)
     except Exception as e:
         logging.error(f"Error generating response: {e}")
@@ -173,44 +184,3 @@ def format_response(raw_text: str) -> str:
     return converted
 
 
-def create_tuned_model():
-    import time
-
-    base_model = "models/gemini-1.5-flash-001-tuning"
-    training_data = [
-        {"Lib reservation system": "1", "output": "2"},
-        {"Lib reservation system": "seven", "output": "eight"},
-    ]
-    operation = genai.create_tuned_model(
-        display_name="increment",
-        source_model=base_model,
-        epoch_count=20,
-        batch_size=2,  # Adjusted batch size to be no larger than training examples size
-        learning_rate=0.001,
-        training_data=training_data,
-    )
-
-    for status in operation.wait_bar():
-        time.sleep(10)
-
-    result = operation.result()
-    print(result)
-    # # You can plot the loss curve with:
-    # snapshots = pd.DataFrame(result.tuning_task.snapshots)
-    # sns.lineplot(data=snapshots, x='epoch', y='mean_loss')
-
-    model = genai.GenerativeModel(model_name=result.name)
-    try:
-        result = model.generate_content("III")
-        print(result.text)  # IV
-    except ValueError as e:
-        print(f"Error generating content: {e}")
-
-
-if __name__ == "__main__":
-    import asyncio
-    import dotenv
-
-    dotenv.load_dotenv()
-    print(asyncio.run(generate_response("Hello, how are you?", [])))
-    create_tuned_model()

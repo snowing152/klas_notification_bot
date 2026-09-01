@@ -20,14 +20,6 @@ def create_quick_access_keyboard(user_lang: Language):
     return keyboard
 
 
-def create_todos_keyboard():
-    todos_keyboard = InlineKeyboardBuilder()
-    todos_keyboard.button(text="Show only 3 days left", callback_data="filter_3")
-    todos_keyboard.button(text="Show only 1 week left", callback_data="filter_7")
-    todos_keyboard.adjust(2)
-    return todos_keyboard.as_markup()
-
-
 def create_language_keyboard():
     language_keyboard = InlineKeyboardBuilder()
     language_keyboard.button(text=Language.EN.value, callback_data="language_en")

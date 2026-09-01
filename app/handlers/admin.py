@@ -15,14 +15,11 @@ async def cmd_notify(message: types.Message):
             return
 
         # Parse the message format: /notify en: English message | ko: 한국어 메시지
-        content = (
-            message.text.split("/notify ", 1)[1]
-            if not message.photo
-            else message.caption.split("/notify ", 1)[1]
-        )
+        raw = message.caption if message.photo else message.text
+        _, separator, content = (raw or "").partition("/notify ")
 
         # Parse messages for different languages
-        messages = parse_multilanguage_message(content)
+        messages = parse_multilanguage_message(content) if separator else {}
 
         if not messages:
             await message.answer(
@@ -37,23 +34,20 @@ async def cmd_notify(message: types.Message):
             photo = message.photo[-1].file_id
             for user in users:
                 try:
-                    # Get user's preferred language (default to English if not set)
-                    user_lang = getattr(user, "language", "en")
-                    caption = messages.get(user_lang, messages.get("en", ""))
-
                     await message.bot.send_photo(
-                        chat_id=user.user_id, photo=photo, caption=caption
+                        chat_id=user.user_id,
+                        photo=photo,
+                        caption=get_message_for_user(user, messages),
                     )
                 except Exception as e:
                     logging.error(f"Failed to send message to {user.user_id}: {e}")
         else:
             for user in users:
                 try:
-                    # Get user's preferred language (default to English if not set)
-                    user_lang = getattr(user, "language", "en")
-                    msg = messages.get(user_lang, messages.get("en", ""))
-
-                    await message.bot.send_message(chat_id=user.user_id, text=msg)
+                    await message.bot.send_message(
+                        chat_id=user.user_id,
+                        text=get_message_for_user(user, messages),
+                    )
                 except Exception as e:
                     logging.error(f"Failed to send message to {user.user_id}: {e}")
 
@@ -62,6 +56,16 @@ async def cmd_notify(message: types.Message):
     except Exception as e:
         logging.error(f"Failed to send notification: {e}")
         await message.answer(Strings.get("unexpected_error", Language.EN))
+
+
+def get_message_for_user(user, messages: dict[str, str]) -> str:
+    """Pick the message matching the user's language, falling back to English.
+
+    User rows store the Language enum name ("EN"/"KO"/"RU") while the parsed
+    message keys are lowercased, so the lookup has to be case-insensitive.
+    """
+    user_lang = (getattr(user, "language", None) or "en").lower()
+    return messages.get(user_lang) or messages.get("en", "")
 
 
 def parse_multilanguage_message(content: str) -> dict[str, str]:

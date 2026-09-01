@@ -76,20 +76,17 @@ async def process_callback_query(callback_query: types.CallbackQuery):
             )
 
         # Language change
-        elif callback_query.data == "language_en":
-            await set_user_language(callback_query.from_user.id, "EN")
-            await callback_query.message.edit_text(
-                Strings.get("language_changed", Language.EN),
+        elif callback_query.data in ("language_en", "language_ko", "language_ru"):
+            chosen_lang = Language[callback_query.data.removeprefix("language_").upper()]
+            saved = await set_user_language(
+                str(callback_query.from_user.id), chosen_lang.name
             )
-        elif callback_query.data == "language_ko":
-            await set_user_language(callback_query.from_user.id, "KO")
+            # Only registered users have a row to store the preference on
             await callback_query.message.edit_text(
-                Strings.get("language_changed", Language.KO),
-            )
-        elif callback_query.data == "language_ru":
-            await set_user_language(callback_query.from_user.id, "RU")
-            await callback_query.message.edit_text(
-                Strings.get("language_changed", Language.RU),
+                Strings.get(
+                    "language_changed" if saved else "language_change_failed",
+                    chosen_lang if saved else user_lang,
+                ),
             )
 
         # News

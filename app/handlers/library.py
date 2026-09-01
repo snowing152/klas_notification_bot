@@ -1,9 +1,10 @@
 import os
 import logging
 import asyncio
+import tempfile
 
 from aiogram import Dispatcher, types
-from aiogram.filters import Command
+from aiogram.filters import Command, CommandObject
 from aiogram.types import FSInputFile
 
 from app.services.qr import get_qr
@@ -22,11 +23,23 @@ async def cmd_qr(message: types.Message):
             await message.answer(Strings.get("library_user_not_found", user_lang))
             return
 
-        qr_code_path = await get_qr(
-            user.username, user.phone_number, decrypt_password(user.encrypted_password)
+        os.makedirs("images", exist_ok=True)
+        fd, temp_path = tempfile.mkstemp(
+            prefix=f"qr_{message.from_user.id}_", suffix=".png", dir="images"
         )
+        os.close(fd)
 
         try:
+            qr_code_path = await get_qr(
+                user.username,
+                user.phone_number,
+                decrypt_password(user.encrypted_password),
+                temp_path,
+            )
+            if not qr_code_path:
+                await message.answer(Strings.get("unexpected_error", user_lang))
+                return
+
             qr_photo = await message.answer_photo(FSInputFile(qr_code_path))
             logging.info(f"User {message.from_user.id} used /qr command")
             await message.delete()
@@ -35,17 +48,21 @@ async def cmd_qr(message: types.Message):
         except Exception as e:
             logging.error(f"Error in reply_photo: {e}")
             await message.answer(Strings.get("unexpected_error", user_lang))
+        finally:
+            if os.path.exists(temp_path):
+                os.remove(temp_path)
 
     except Exception as e:
         logging.error(f"Error in cmd_qr: {e}")
         await message.answer(Strings.get("unexpected_error", user_lang))
 
 
-async def cmd_find_book(message: types.Message):
+async def cmd_find_book(message: types.Message, command: CommandObject):
     try:
         user_lang = await get_user_language_with_fallback(message)
         logging.info(f"User {message.from_user.id} used /search command")
-        query = message.text.split("/search")[1]
+        # CommandObject.args handles the "/search@botname query" group form too
+        query = (command.args or "").strip()
         if not query:
             await message.answer(Strings.get("please_enter_book_name", user_lang))
             return

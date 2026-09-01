@@ -150,9 +150,14 @@ async def other_message(message: types.Message):
             await message.reply(
                 "Location is not available in the chat. Please use the command from the bot menu."
             )
-        elif message.text.startswith("/"):
+        elif message.text and message.text.startswith("/"):
             await message.reply(
                 "This command is not available in the chat. Please use the command from the bot menu."
+            )
+        elif not message.text:
+            # Any remaining content type carrying no text (contact, poll, dice, ...)
+            await message.reply(
+                "This content type is not available in the chat. Please use the command from the bot menu."
             )
         else:
             # Get previous messages

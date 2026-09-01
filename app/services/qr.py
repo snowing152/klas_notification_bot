@@ -1,5 +1,4 @@
 import logging
-import asyncio
 from aiohttp import ClientSession
 import xml.etree.ElementTree as ET
 from base64 import encodebytes, b64encode
@@ -16,9 +15,17 @@ _session = None
 
 async def get_session():
     global _session
-    if _session is None:
+    if _session is None or _session.closed:
         _session = ClientSession()
     return _session
+
+
+async def close_session():
+    """Close the shared session; called on shutdown to avoid a dangling session."""
+    global _session
+    if _session is not None and not _session.closed:
+        await _session.close()
+    _session = None
 
 
 def encode(msg: str):
@@ -149,33 +156,16 @@ async def generate_qr_code(qr_data: str, path: str):
     return path
 
 
-async def get_qr(std_number: str, phone_number: str, password: str):
+async def get_qr(std_number: str, phone_number: str, password: str, path: str):
     real_id = "0" + std_number
     try:
         secret = await get_secret_key(real_id)
         auth_key = await library_login(std_number, phone_number, password, secret)
         qr_data = await get_qr_code(real_id, auth_key)
-        qr_path = await generate_qr_code(qr_data, path="images/qr.png")
+        qr_path = await generate_qr_code(qr_data, path=path)
         return qr_path
     except Exception as e:
         logging.error(f"Error in get_qr: {e}")
         return None
 
 
-async def main():
-    std_number = ""
-    phone = ""
-    password = ""
-    real_id = "0" + std_number
-
-    try:
-        secret = await get_secret_key(real_id)
-        auth_key = await library_login(real_id, std_number, phone, password, secret)
-        qr_data = await get_qr_code(real_id, auth_key)
-        generate_qr_code(qr_data, path="qr.png")
-    except Exception as e:
-        logging.error(f"Error in main: {e}")
-
-
-if __name__ == "__main__":
-    asyncio.run(main())

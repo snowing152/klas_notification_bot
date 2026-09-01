@@ -6,7 +6,7 @@ from aiogram import Dispatcher, types
 from aiogram.filters import Command
 from aiogram.types import FSInputFile
 
-from app.strings import Strings, Language
+from app.strings import Strings
 from app.database.database import get_user
 from app.services.kw import KwangwoonUniversityApi
 from app.utils.encryption import decrypt_password
@@ -34,7 +34,7 @@ async def cmd_info(message: types.Message):
                 return
 
             photos_dir = Path("images/photos")
-            photos_dir.mkdir(exist_ok=True)
+            photos_dir.mkdir(parents=True, exist_ok=True)
             photo_path = photos_dir / f"student_{message.from_user.id}.jpg"
 
             if not photo_path.exists():

@@ -11,11 +11,26 @@
 
 [![License](https://img.shields.io/badge/License-MIT-green.svg?style=flat-square)](LICENSE)
 [![Tests](https://img.shields.io/badge/Tests-pytest-green.svg?style=flat-square)](tests/)
-[![Coverage](https://img.shields.io/badge/Coverage-85%25-brightgreen.svg?style=flat-square)](htmlcov/)
 
 [🚀 Quick Start](#-quick-start) • [📖 Documentation](#-features) • [🛠️ Installation](#️-installation) • [🤝 Contributing](#-contributing)
 
 </div>
+
+---
+
+> ## 🔱 About this fork
+>
+> This is a continuation of **[ChoiVadim/klas_notification_bot](https://github.com/ChoiVadim/klas_notification_bot)**,
+> created by [Tsoi Vadim](https://github.com/ChoiVadim). The original design, the KLAS
+> integration and virtually all of the implementation are his work.
+>
+> I ([Maksim Tyan](https://github.com/snowing152)) took over maintenance **with the
+> author's permission** — I now run the public instance of the bot, keep it deployed, and
+> continue development from here. The upstream repository remains the origin of this
+> project and is credited in [LICENSE](LICENSE).
+>
+> Issues and pull requests about *this* instance belong here; the original repository is
+> not maintained by me.
 
 ---
 
@@ -71,8 +86,8 @@
 
 ```bash
 # Clone the repository
-git clone https://github.com/yourusername/kw_bot.git
-cd kw_bot
+git clone https://github.com/snowing152/klas_notification_bot.git
+cd klas_notification_bot
 
 # Create virtual environment
 python -m venv .venv
@@ -98,7 +113,16 @@ Create a `.env` file in the project root:
 BOT_TOKEN=your_telegram_bot_token_here
 GEMINI_API_KEY=your_google_gemini_api_key_here
 ADMIN_ID=your_telegram_user_id
+
+# Optional — sensible defaults are used when omitted
+DATA_DIR=.                 # where bot_users.db and encryption_key.key live
+ENCRYPTION_KEY=            # Fernet key; falls back to encryption_key.key when empty
+TZ=Asia/Seoul              # KLAS deadlines are Korean local time
 ```
+
+`ADMIN_ID` is your own numeric Telegram id — [@userinfobot](https://t.me/userinfobot)
+will tell you yours. It gates the `/notify` broadcast command, and startup fails with a
+clear error if it is missing or not a number.
 
 ### 🚀 Run the Bot
 
@@ -114,7 +138,7 @@ python main.py
 <summary><b>📁 Project Structure</b></summary>
 
 ```
-kw_bot/
+klas_notification_bot/
 ├── 📁 app/
 │   ├── 📁 database/          # SQLAlchemy models & DB operations
 │   ├── 📁 handlers/          # Telegram message handlers
@@ -127,8 +151,10 @@ kw_bot/
 │   └── 📄 keyboards.py      # Telegram keyboards
 ├── 📁 tests/                # Test suite
 ├── 📁 images/               # Assets & screenshots
+├── 📁 logs/                 # Runtime logs (gitignored)
 ├── 📄 main.py              # Application entry point
-└── 📄 requirements.txt     # Dependencies
+├── 📄 requirements.txt     # Runtime dependencies
+└── 📄 requirements-dev.txt # Test dependencies
 ```
 
 </details>
@@ -178,13 +204,23 @@ graph TD
 | `/news` | 📰 Latest campus news |
 | `/qr` | 📱 Generate library QR code |
 | `/lregister` | 📚 Login to library system |
+| `/search <book>` | 🔍 Search the library catalogue |
 
 ### ⚙️ **Settings**
 | Command | Description |
 |---------|-------------|
-| `/language` | 🌍 Change interface language |
+| `/language` | 🌍 Change interface language (requires registration to persist) |
 | `/unregister` | 🗑️ Delete stored credentials |
 | `/donate` | 💝 Support the developer |
+| `/refund` | ↩️ Refund a donation (reply to the payment message) |
+
+### 🔑 **Admin Only**
+| Command | Description |
+|---------|-------------|
+| `/notify` | 📢 Broadcast to all users, e.g. `/notify en: Hello \| ko: 안녕하세요` |
+
+Only the Telegram account matching `ADMIN_ID` in `.env` can use this. Each user receives
+the version matching their language, falling back to the `en:` text.
 
 ### 🤖 **AI Assistant**
 Simply send any text message to chat with the AI about university life!
@@ -205,11 +241,11 @@ The bot automatically monitors your KLAS account and sends notifications for:
 ## 🧪 Testing
 
 ```bash
-# Run all tests
-pytest -v
+# Install test dependencies (includes requirements.txt)
+pip install -r requirements-dev.txt
 
-# Run with coverage
-pytest -v --cov=app --cov-report=html
+# Run all tests (coverage is enabled by default via pytest.ini)
+pytest -v
 
 # Run specific test category
 pytest tests/unit/ -v
@@ -217,9 +253,11 @@ pytest tests/integration/ -v
 ```
 
 ### 📊 Test Coverage
-- **Unit Tests** - Database, models, utilities
+- **Unit Tests** - Database, strings, encryption, QR generation, news cache, admin broadcast
 - **Integration Tests** - Handlers, services
-- **E2E Tests** - Full bot workflows
+
+Tests run against a temporary SQLite database created per test, so running the suite
+never touches your real `bot_users.db`.
 
 ---
 
@@ -227,25 +265,80 @@ pytest tests/integration/ -v
 
 ### 🐧 Linux Service (Systemd)
 
-1. **Copy service file:**
+1. **Edit `botdaemon.service`** and replace the `<your-user>`, `<your-group>` and
+   `/path/to/klas_notification_bot` placeholders with your real values.
+
+2. **Copy service file:**
 ```bash
 sudo cp botdaemon.service /etc/systemd/system/kwbot.service
 ```
 
-2. **Enable and start:**
+3. **Enable and start:**
 ```bash
 sudo systemctl daemon-reload
 sudo systemctl enable --now kwbot.service
 sudo systemctl status kwbot.service
 ```
 
-3. **View logs:**
+4. **View logs:**
 ```bash
 sudo journalctl -u kwbot.service -f
 ```
 
-### 🐳 Docker (Coming Soon)
-Docker support is planned for easier deployment.
+### 🚂 Railway
+
+The bot is a worker — it polls Telegram and exposes no port, so no domain or health
+check is needed. `railway.json` already pins the builder and start command.
+
+**1. Attach a volume.** Railway wipes the container filesystem on every deploy. Without
+a volume, `bot_users.db` is destroyed and every user has to register again. In the
+service settings add a volume mounted at `/data`. 1 GB is plenty.
+
+**2. Set the variables:**
+
+| Variable | Value | Notes |
+|----------|-------|-------|
+| `BOT_TOKEN` | from [@BotFather](https://t.me/botfather) | |
+| `ADMIN_ID` | your numeric Telegram id | ask [@userinfobot](https://t.me/userinfobot) |
+| `GEMINI_API_KEY` | Google AI Studio key | optional, powers the AI chat |
+| `DATA_DIR` | `/data` | **required** — points the database at the volume |
+| `ENCRYPTION_KEY` | your Fernet key | **required** — see below |
+| `TZ` | `Asia/Seoul` | optional; the app already defaults to this |
+
+**3. `ENCRYPTION_KEY` is the one you cannot lose.** On an ephemeral filesystem the key
+file would be regenerated on each deploy, which makes every password already in the
+database **permanently undecryptable**. Generate it once and paste it into Railway:
+
+```bash
+python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+```
+
+Keep a copy somewhere safe. It is never recoverable from the database.
+
+**4. Deploy.** `railway up`, or connect the GitHub repo for push-to-deploy.
+
+> ⚠️ **Timezone.** KLAS reports every deadline in Korean local time and the bot compares
+> it against the local clock. `app/config.py` pins `TZ=Asia/Seoul` at import for exactly
+> this reason — a UTC container would compute every deadline nine hours off. Do not
+> override `TZ` unless you know why.
+
+### 📝 Logging
+
+The bot always logs to stdout, so Railway's dashboard (and `railway logs`) shows
+everything. On a self-hosted Linux box it *additionally* writes `logs/kwbot.log` inside
+the project directory (created automatically, and gitignored); that file handler is
+skipped on Railway, where the file would be lost on the next deploy anyway.
+
+### 💾 What to carry across a redeploy
+
+These are deliberately untracked — carry them with the bot, or your users will have to
+register again:
+
+| Item | Why it matters |
+|------|----------------|
+| `bot_users.db` | All registered users and their encrypted credentials. On Railway, keep it on the mounted volume. |
+| The Fernet key | **Lose it and every stored password becomes undecryptable.** `ENCRYPTION_KEY` env var, or `encryption_key.key` when self-hosting. |
+| `.env` | Bot token, Gemini key, admin ID |
 
 ---
 
@@ -254,18 +347,11 @@ Docker support is planned for easier deployment.
 ### 🔧 Setup Development Environment
 
 ```bash
-# Install development dependencies
+# Install runtime + test dependencies
 pip install -r requirements-dev.txt
 
-# Run pre-commit hooks
-pre-commit install
-
-# Format code
-black app/
-isort app/
-
-# Type checking
-mypy app/
+# Run the test suite
+pytest -v
 ```
 
 ### 📝 Contributing Guidelines
@@ -301,13 +387,22 @@ mypy app/
 
 ### Bot Won't Start
 - ✅ Check `BOT_TOKEN` in `.env`
-- ✅ Verify `encryption_key.key` exists
+- ✅ Make sure `ADMIN_ID` is a number — a missing or placeholder value fails at startup
+- ✅ Verify `ENCRYPTION_KEY` is set, or that `encryption_key.key` exists (see the generation step above)
 - ✅ Ensure Python 3.10+ is installed
 
 ### KLAS Login Fails
 - ✅ Verify KW credentials
 - ✅ Check network connectivity
 - ✅ Try re-registering with `/register`
+
+### AI Assistant Replies With An Error
+- ✅ Check `GEMINI_API_KEY` in `.env`
+- ✅ Check `logs/kwbot.log` — an expired model name shows up here as a 404
+
+### `/qr` Doesn't Work
+- ✅ Register your library account first with `/lregister`
+- ✅ Make sure `Pillow` is installed (it renders the QR image)
 
 ### Missing Dependencies
 ```bash
@@ -317,7 +412,6 @@ pip install --upgrade -r requirements.txt
 ### Permission Errors (Linux)
 ```bash
 sudo chown -R $USER:$USER /path/to/bot
-chmod +x main.py
 ```
 
 </details>
@@ -338,10 +432,8 @@ Contributions are what make the open source community amazing! Any contributions
 
 ### 💝 Support the Project
 
-If this bot helps you manage your university life better, consider:
-
-[![Buy Me A Coffee](https://img.shields.io/badge/Buy%20Me%20A%20Coffee-ffdd00?style=for-the-badge&logo=buy-me-a-coffee&logoColor=black)](https://buymeacoffee.com/yourusername)
-[![Ko-Fi](https://img.shields.io/badge/Ko--fi-F16061?style=for-the-badge&logo=ko-fi&logoColor=white)](https://ko-fi.com/yourusername)
+If this bot helps you manage your university life better, consider supporting it
+with the `/donate` command inside the bot (Telegram Stars ⭐).
 
 **⭐ Star this repository if you found it helpful!**
 
@@ -352,6 +444,9 @@ If this bot helps you manage your university life better, consider:
 <div align="center">
 
 **Made with ❤️ for Kwangwoon University students**
+
+Originally created by [Tsoi Vadim](https://github.com/ChoiVadim).
+Currently maintained by [Maksim Tyan](https://github.com/snowing152) with the author's blessing.
 
 [🔝 Back to Top](#-klas-notification-bot)
 

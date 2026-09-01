@@ -1,9 +1,17 @@
 .venv
+# Generated per request and deleted after sending; ignored in case one is left
+# behind by a crash - these encode library credentials
 images/qr.png
+images/qr_*.png
+# Cached student ID photos
+images/photos/
 .env
 *.json
+# Deploy config has to be committed for Railway to read it
+!railway.json
 *cache*
 log.txt
+logs/
 *.db
 *.key
 htmlcov/

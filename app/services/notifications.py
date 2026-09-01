@@ -7,7 +7,7 @@ from app.config import settings
 from app.utils.encryption import decrypt_password
 from app.database.database import get_all_users, get_user_language
 from app.services.kw import KwangwoonUniversityApi
-from app.strings import Strings
+from app.strings import Strings, Language
 
 
 # Define time thresholds in hours and their corresponding emoji indicators
@@ -20,15 +20,27 @@ TIME_THRESHOLDS = {
     24: "📅",  # Day notice
 }
 
+# Assignment type emojis
+TYPE_EMOJIS = {
+    "lectures": "📚",
+    "homeworks": "📝",
+    "quizzes": "🧠",
+    "team_projects": "🚧",
+}
 
-async def send_notification(message: str, user_id: str, urgency_level: int):
+
+async def send_notification(
+    message: str, user_id: str, urgency_level: int, user_lang: Language = Language.EN
+):
     try:
         emoji = TIME_THRESHOLDS.get(urgency_level, "📌")
-        prefix = f"{emoji} {urgency_level} hour{'s' if urgency_level > 1 else ''} remaining!\n\n"
-        postfix = "🚨 Don't forget to do it! 🚨"
+        prefix = Strings.get(
+            "notification_header", user_lang, emoji=emoji, hours=urgency_level
+        )
+        postfix = Strings.get("notification_footer", user_lang)
         await bot.send_message(chat_id=user_id, text=prefix + message + postfix)
     except Exception as e:
-        print(f"Error sending notification: {e}")
+        logging.error(f"Error sending notification to {user_id}: {e}")
 
 
 async def start_notification_service():
@@ -60,6 +72,8 @@ async def check_todos():
                     if user_id not in notification_tracker:
                         notification_tracker[user_id] = {}
 
+                    user_lang = await get_user_language(user_id) or Language.EN
+
                     async with KwangwoonUniversityApi() as kw:
                         await kw.login(
                             user.username, decrypt_password(user.encrypted_password)
@@ -77,16 +91,8 @@ async def check_todos():
                         for subject in todo_list:
                             subject_name = subject.get("name", "Unknown Subject")
 
-                            # Assignment type emojis
-                            type_emojis = {
-                                "lectures": "📚",
-                                "homeworks": "📝",
-                                "quizzes": "🧠",
-                                "team_projects": "🚧",
-                            }
-
                             # Check each type of assignment
-                            for assignment_type, emoji in type_emojis.items():
+                            for assignment_type, emoji in TYPE_EMOJIS.items():
                                 assignments = subject["todo"].get(assignment_type, [])
                                 if assignments:
                                     for assignment in assignments:
@@ -128,12 +134,22 @@ async def check_todos():
                                                 ]
                                             ):  # Check if notification wasn't sent
 
+                                                type_label = Strings.get(
+                                                    f"type_{assignment_type}", user_lang
+                                                )
+                                                time_str = (
+                                                    f"{hours_left}h "
+                                                    f"{left_time % 3600 // 60}m"
+                                                )
                                                 threshold_messages[threshold] += (
                                                     f"{emoji} {subject_name}\n"
-                                                    f"Type: {assignment_type.title()}\n"
-                                                    f"Title: {title}\n"
-                                                    f"Time left: {hours_left} hour{'s' if hours_left != 1 else ''}"
-                                                    f" and {left_time % 3600 // 60} minutes\n\n"
+                                                    f"{type_label}: {title}\n"
+                                                    + Strings.get(
+                                                        "time_left",
+                                                        user_lang,
+                                                        time_str=time_str,
+                                                    )
+                                                    + "\n\n"
                                                 )
                                                 # Mark this threshold as notified for this assignment
                                                 notification_tracker[user_id][
@@ -143,14 +159,16 @@ async def check_todos():
                         # Send notifications for each threshold that has messages
                         for threshold, message in threshold_messages.items():
                             if message:
-                                await send_notification(message, user_id, threshold)
+                                await send_notification(
+                                    message, user_id, threshold, user_lang
+                                )
                                 await asyncio.sleep(1)
 
                     # Clean up old assignments from tracker
                     current_assignments = {
                         f"{subject['name']}_{type_}_{assignment.get('title', '')}"
                         for subject in todo_list
-                        for type_ in type_emojis.keys()
+                        for type_ in TYPE_EMOJIS.keys()
                         for assignment in subject["todo"].get(type_, [])
                     }
 

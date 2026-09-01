@@ -1,3 +1,4 @@
+import logging
 from enum import Enum
 from typing import Dict
 
@@ -27,7 +28,7 @@ Here's how to get started:
 You can also chat with me directly about university-related questions!
 Find more helpful commands by tapping the menu button at the bottom left of your screen!
 
-If something is not working or you have a problem, feel free to contact me @tsoivadim 💬
+If something is not working or you have a problem, feel free to contact me @bulochkaskefirochkom 💬
 I'll help you out quickly!
 """,
             "enter_username": "🎓 Please enter your student ID (I'll keep this secure)",
@@ -97,57 +98,14 @@ All options are buffet-style! Pay once and enjoy as much as you like 🍴
             "language_change_failed": "Please use /register first so I can save your language preference",
             "language_choice": "🌐 Choose your preferred language",
             "school_food_menu_header": "🍴 {day}'s Dining Options 🍴\n\n",
-            "donate_title": "Buy me a coffee!😁",
-            "donate_description": "Thank you for using my bot!",
-            "choose_donation_amount": "Please choose a donation amount:",
-            "successful_payment": "✅ Payment successful!",
-            "refund_error": "Please reply to a payment message to request a refund!",
-            "refund_success": "✅ Refund has been processed successfully.",
-            "refund_error_message": "❌ Refund request was not successful. Please try again later.",
-            "library_user_not_found": "🚫 You need to login to library first, please use /lregister command",
-            "failed_to_fetch_news": "🚨 Failed to fetch news. Please try again later.",
-            "choose_news_type": "Choose a type of news",
-            "please_enter_book_name": "/search command requires a book name.",
-            "no_books_found": "🤔 No books found. Check your spelling and try again!",
-            "todo_list_header": "📋 Your Todo List:\n\n\n",
-            "time_left": "⏰ Time left: {time_str}",
-            "lectures": "Lectures left: {count}",
-            "homeworks": "Homeworks left: {count}",
-            "quizzes": "Quizzes left: {count}",
-            "team_projects": "Team projects left: {count}",
-            "too_many_messages": "You are sending messages too quickly. Please wait a moment.",
-            "student_info": """ UID: {uid} 
-👨‍🎓 Name: {name} 
-Major: {major}
-Grade: {grade} Semester: {semester}
-🎯 Total Credits: {total_credits}
-Major Credits: {major_credits_total}
-Elective Credits: {elective_credits_total}
-Average Score: {average_score} 📈""",
-            "school_food_info": """
-🍳 <1000KRW breakfast>
-1000 KRW breakfast available from 8:30AM ~9:30AM at 복지관 2층
-
-🍔 <Lunch> 
-6000 KRW lunch available from 11:30 AM to 14:00 PM at 복지관 2층
-
-🍴 <Food court>
-8000 KRW meal available from 11:30 AM to 14:00 PM at 연구관 지하1층
-
-Everything is a buffet, so you can pay once and eat as much as you want 🍴
-""",
-            "school_closed_on_weekend": "🚫 Cafeteria is closed on the weekend ",
-            "foreigners_news": "🌏 Foreigners",
-            "all_news": "📰 All",
-            "tomorrow_menu": "🗓️ Tomorrow's Menu",
-            "info": "ℹ️ Info",
-            "read_more": "📖 Read more",
-            "language_changed": "✅ Language changed successfully!",
-            "language_change_failed": "❌ Please /register before changing language!",
-            "language_choice": "🌐 Choose your language",
-            "school_food_menu_header": "🍴 {day}'s School Food Menu 🍴\n\n",
             "chat_about_university": "Feel free to ask me any questions about the university! I can help with information about campus facilities, academic policies, and more.",
             "input_field_placeholder": "Ask a question...",
+            "notification_header": "{emoji} Less than {hours}h remaining!\n\n",
+            "notification_footer": "🚨 Don't forget to do it! 🚨",
+            "type_lectures": "Lecture",
+            "type_homeworks": "Assignment",
+            "type_quizzes": "Quiz",
+            "type_team_projects": "Team project",
         },
 
 
@@ -168,7 +126,7 @@ Everything is a buffet, so you can pay once and eat as much as you want 🍴
 저와 직접 대화하면서 대학 관련 질문을 하실 수도 있어요!
 더 많은 유용한 명령어는 화면 왼쪽 하단의 메뉴 버튼에서 확인하실 수 있어요
 
-무언가 작동하지 않거나 문제가 있으시면 @tsoivadim 에게 연락주세요 💬
+무언가 작동하지 않거나 문제가 있으시면 @bulochkaskefirochkom 에게 연락주세요 💬
 빠르게 도와드리겠습니다!""",
             "enter_username": "🎓 학번을 입력해주세요 (안전하게 보관됩니다)",
             "enter_password": "🔑 KLAS 비밀번호를 입력해주세요 (암호화됩니다)",
@@ -239,6 +197,12 @@ Everything is a buffet, so you can pay once and eat as much as you want 🍴
             "language_choice": "🌐 원하는 언어를 선택하세요",
             "school_food_menu_header": "🍴 {day} 식사 옵션 🍴\n\n",
             "input_field_placeholder": "칠문 입력",
+            "notification_header": "{emoji} {hours}시간 이내 마감입니다!\n\n",
+            "notification_footer": "🚨 잊지 말고 완료하세요! 🚨",
+            "type_lectures": "강의",
+            "type_homeworks": "과제",
+            "type_quizzes": "퀴즈",
+            "type_team_projects": "팀 프로젝트",
         },
         Language.RU: {
             "test_string": "Добро пожаловать!",
@@ -256,7 +220,7 @@ Everything is a buffet, so you can pay once and eat as much as you want 🍴
 Вы также можете напрямую общаться со мной и задавать вопросы об университете!
 Больше полезных команд доступно в меню в левом нижнем углу экрана!
 
-Если что-то не работает или у вас есть проблемы, напишите мне @tsoivadim 💬
+Если что-то не работает или у вас есть проблемы, напишите мне @bulochkaskefirochkom 💬
 Я исправлю всё быстро!
 """,
             "enter_username": "🎓 Введите ваш студенческий номер",
@@ -328,14 +292,33 @@ Everything is a buffet, so you can pay once and eat as much as you want 🍴
             "language_choice": "🌐 Выберите предпочитаемый язык",
             "school_food_menu_header": "🍴 Варианты питания на {day} 🍴\n\n",
             "input_field_placeholder": "Задайте вопрос...",
+            "notification_header": "{emoji} Осталось менее {hours} ч!\n\n",
+            "notification_footer": "🚨 Не забудьте выполнить! 🚨",
+            "type_lectures": "Лекция",
+            "type_homeworks": "Задание",
+            "type_quizzes": "Тест",
+            "type_team_projects": "Групповой проект",
         },
     }
 
     @classmethod
     def get(cls, key: str, lang: Language = Language.EN, **kwargs) -> str:
-        """Get string by key and language with optional formatting"""
-        try:
-            return cls._strings[lang][key].format(**kwargs)
-        except KeyError:
-            # Fallback to English if translation not found
-            return cls._strings[Language.EN][key].format(**kwargs)
+        """Get string by key and language with optional formatting.
+
+        Never raises: these strings are the bot's only way to talk to the user,
+        including from inside handlers' error paths, so a missing key or a
+        missing format placeholder must not take the handler down with it.
+        """
+        for candidate in (lang, Language.EN):
+            template = cls._strings.get(candidate, {}).get(key)
+            if template is None:
+                continue
+            try:
+                return template.format(**kwargs)
+            except (KeyError, IndexError) as e:
+                # Template expects a placeholder the caller did not supply
+                logging.error(f"Bad format args for string {key!r} ({candidate}): {e}")
+                return template
+
+        logging.error(f"Missing string key: {key!r}")
+        return key
