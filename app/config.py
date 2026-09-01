@@ -18,9 +18,35 @@ os.environ["TZ"] = os.getenv("KW_TZ", "Asia/Seoul")
 if hasattr(time, "tzset"):
     time.tzset()
 
-# Writable directory for the SQLite file. On Railway the container filesystem is
-# wiped on every deploy, so this must point at a mounted volume (e.g. /data).
-DATA_DIR = os.getenv("DATA_DIR", os.getcwd())
+def _validated_data_dir() -> str:
+    """Writable directory for the SQLite file and the key file.
+
+    On a PaaS the container filesystem is wiped on every deploy, so this should
+    point at a mounted volume (e.g. /data on Railway).
+    """
+    directory = os.getenv("DATA_DIR") or os.getcwd()
+
+    if not os.path.isdir(directory):
+        # Deliberately not created: a missing DATA_DIR almost always means the
+        # volume was never mounted, and creating it would let the bot run while
+        # writing the database to a filesystem that is wiped on the next deploy.
+        # Losing users silently is worse than refusing to start.
+        raise RuntimeError(
+            f"DATA_DIR points at {directory!r}, which does not exist. "
+            f"On Railway this means no volume is mounted there - add one with "
+            f"mount path {directory!r}, or unset DATA_DIR to use the working "
+            f"directory (note: not persistent across deploys)."
+        )
+
+    if not os.access(directory, os.W_OK):
+        raise RuntimeError(
+            f"DATA_DIR {directory!r} exists but is not writable by this process."
+        )
+
+    return directory
+
+
+DATA_DIR = _validated_data_dir()
 
 
 def _default_database_url() -> str:
