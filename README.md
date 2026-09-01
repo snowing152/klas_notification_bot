@@ -117,7 +117,7 @@ ADMIN_ID=your_telegram_user_id
 # Optional — sensible defaults are used when omitted
 DATA_DIR=.                 # where bot_users.db and encryption_key.key live
 ENCRYPTION_KEY=            # Fernet key; falls back to encryption_key.key when empty
-TZ=Asia/Seoul              # KLAS deadlines are Korean local time
+KW_TZ=                     # leave empty: the bot forces Asia/Seoul, which KLAS requires
 ```
 
 `ADMIN_ID` is your own numeric Telegram id — [@userinfobot](https://t.me/userinfobot)
@@ -303,7 +303,7 @@ service settings add a volume mounted at `/data`. 1 GB is plenty.
 | `GEMINI_API_KEY` | Google AI Studio key | optional, powers the AI chat |
 | `DATA_DIR` | `/data` | **required** — points the database at the volume |
 | `ENCRYPTION_KEY` | your Fernet key | **required** — see below |
-| `TZ` | `Asia/Seoul` | optional; the app already defaults to this |
+| `KW_TZ` | — | **leave unset.** Only to run on a timezone other than Seoul |
 
 **3. `ENCRYPTION_KEY` is the one you cannot lose.** On an ephemeral filesystem the key
 file would be regenerated on each deploy, which makes every password already in the
@@ -318,9 +318,11 @@ Keep a copy somewhere safe. It is never recoverable from the database.
 **4. Deploy.** `railway up`, or connect the GitHub repo for push-to-deploy.
 
 > ⚠️ **Timezone.** KLAS reports every deadline in Korean local time and the bot compares
-> it against the local clock. `app/config.py` pins `TZ=Asia/Seoul` at import for exactly
-> this reason — a UTC container would compute every deadline nine hours off. Do not
-> override `TZ` unless you know why.
+> it against the local clock, so a UTC container would compute every deadline nine hours
+> off. `app/config.py` therefore *forces* `TZ=Asia/Seoul` at import — it overwrites
+> whatever the host set, because some platforms export `TZ=UTC` themselves and a mere
+> default would be silently ignored there. Setting `TZ` in your deploy has no effect;
+> the deliberate override is `KW_TZ`, and you almost certainly do not want it.
 
 ### 📝 Logging
 

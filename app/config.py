@@ -7,11 +7,14 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 load_dotenv()
 
 # KLAS returns every date as Korean local time and the parsing in
-# app/services/kw.py compares those against a naive datetime.now(). A container
-# running in UTC (the Railway default) would therefore compute every deadline
-# nine hours off. Pin the process timezone before anything imports datetime
-# helpers; TZ from the environment still wins, so a self-hosted run can override.
-os.environ.setdefault("TZ", "Asia/Seoul")
+# app/services/kw.py compares those against a naive datetime.now(), so the
+# process must run on Korean time or every deadline is computed hours off.
+#
+# This overwrites TZ rather than defaulting it: a host that sets TZ=UTC itself
+# would otherwise silently reintroduce the nine-hour error, and Seoul time is a
+# property of the data source here, not a user preference. The escape hatch is
+# KW_TZ, which is ours alone and cannot be set by the platform by accident.
+os.environ["TZ"] = os.getenv("KW_TZ", "Asia/Seoul")
 if hasattr(time, "tzset"):
     time.tzset()
 
