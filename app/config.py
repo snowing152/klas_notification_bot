@@ -6,11 +6,13 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 load_dotenv()
 
-# KLAS returns every date as Korean local time and the parsing in
-# app/services/kw.py compares those against a naive datetime.now(), so the
-# process must run on Korean time or every deadline is computed hours off.
+# KLAS returns every date as Korean local time, so anything comparing those
+# against the local clock has to be on Korean time or every deadline is computed
+# hours off. The date-sensitive services do not rely on this: they read the zone
+# explicitly through app/utils/timezone.py. This stays as a second line of
+# defence for plain datetime.now() calls elsewhere (logging timestamps included).
 #
-# This overwrites TZ rather than defaulting it: a host that sets TZ=UTC itself
+# It overwrites TZ rather than defaulting it: a host that sets TZ=UTC itself
 # would otherwise silently reintroduce the nine-hour error, and Seoul time is a
 # property of the data source here, not a user preference. The escape hatch is
 # KW_TZ, which is ours alone and cannot be set by the platform by accident.

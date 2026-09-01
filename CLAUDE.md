@@ -71,11 +71,17 @@ stored password permanently undecryptable — never regenerate it on an existing
 Handlers `await message.delete()` after credential input so the password does not stay in
 the chat.
 
-**Timezone is load-bearing.** `app/config.py` *overwrites* `TZ` with `Asia/Seoul` at
-import (escape hatch: `KW_TZ`) because `app/services/kw.py` compares KLAS's Korean-local
-date strings against a naive `datetime.now()`. Running anywhere else computes every
-deadline hours off. Don't "fix" this by respecting the host `TZ` — some platforms export
-`TZ=UTC` themselves, which is exactly what the override defends against.
+**Timezone is load-bearing.** KLAS returns Korean-local date strings with no offset, and
+`app/services/kw.py` compares/subtracts them against a naive "now"; running on any other
+clock computes every deadline hours off. **Date-sensitive code calls `timezone.now()`
+from `app/utils/timezone.py`** (naive Seoul time via `ZoneInfo`, escape hatch `KW_TZ`) —
+never `datetime.now()`. That covers `kw.py` and `food.py`'s weekday lookups.
+`app/config.py` additionally overwrites the process `TZ` at import as a fallback for
+everything else; it's a fallback because it depends on system tzdata a slim container may
+not have, and on config being imported before the first date is resolved. Don't "fix"
+either by respecting the host `TZ` — some platforms export `TZ=UTC` themselves, which is
+exactly what this defends against. The `tzdata` pin in `requirements.txt` is what makes
+`ZoneInfo` resolve `Asia/Seoul` without a system tz database.
 
 **`DATA_DIR`** is where `bot_users.db` and the key file live. It is validated, not
 created: a missing directory raises, because on a PaaS it almost always means an unmounted

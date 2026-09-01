@@ -1,11 +1,11 @@
 import aiohttp
 import asyncio
 import logging
-from datetime import datetime
 
 from bs4 import BeautifulSoup
 
 from app.strings import Strings, Language
+from app.utils import timezone
 
 
 local_cache = {}
@@ -59,7 +59,7 @@ async def fetch_weekly_menu():
 
 def clear_cache_if_monday():
     # Clear the cache if today is Monday
-    if datetime.now().weekday() == 0:
+    if timezone.now().weekday() == 0:
         local_cache.clear()
 
 
@@ -129,14 +129,14 @@ async def get_menu_for_day(day_index: int, user_lang: Language):
 
 
 async def get_today_school_food_menu(user_lang: Language):
-    today_index = datetime.now().weekday() % 7
+    today_index = timezone.now().weekday() % 7
     if today_index > 4:
         return Strings.get("school_closed_on_weekend", user_lang)
     return await get_menu_for_day(today_index, user_lang)
 
 
 async def get_tomorrow_school_food_menu(user_lang: Language):
-    tomorrow_index = (datetime.now().weekday() + 1) % 7
+    tomorrow_index = (timezone.now().weekday() + 1) % 7
     if tomorrow_index > 4:
         return Strings.get("school_closed_on_weekend", user_lang)
     return await get_menu_for_day(tomorrow_index, user_lang)

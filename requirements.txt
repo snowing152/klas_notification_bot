@@ -14,3 +14,6 @@ python-dotenv==1.2.3
 qrcode==8.2
 SQLAlchemy==2.0.52
 telegramify-markdown==1.2.0
+# Ships the tz database as a package: app/utils/timezone.py resolves Asia/Seoul
+# through zoneinfo, and a slim container has no /usr/share/zoneinfo to read.
+tzdata==2026.3

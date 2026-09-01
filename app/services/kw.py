@@ -12,6 +12,8 @@ from fake_useragent import UserAgent
 from bs4 import BeautifulSoup
 import base64
 
+from app.utils import timezone
+
 
 class KwangwoonUniversityApi:
     def __init__(self) -> None:
@@ -193,7 +195,7 @@ class KwangwoonUniversityApi:
 
     def _get_not_done_lectures_info(self, lectures: list[dict]) -> list[dict]:
         not_done_lectures = []
-        today_date = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
+        today_date = timezone.now().strftime("%Y-%m-%d %H:%M")
         for lecture in lectures:
             if (
                 lecture.get("prog") is not None
@@ -215,7 +217,7 @@ class KwangwoonUniversityApi:
 
     def _get_not_done_homeworks_info(self, homeworks: list[dict]) -> list[dict]:
         not_done_homeworks = []
-        today_date = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
+        today_date = timezone.now().strftime("%Y-%m-%d %H:%M")
         for homework in homeworks:
             if (
                 homework.get("submityn") == "N"
@@ -235,7 +237,7 @@ class KwangwoonUniversityApi:
 
     def _get_not_done_team_projects_info(self, team_projects: list[dict]) -> list[dict]:
         not_done_team_projects = []
-        today_date = datetime.datetime.now().strftime("%Y-%m-%dT%H:%M:%S.%f%z")
+        today_date = timezone.now().strftime("%Y-%m-%dT%H:%M:%S.%f%z")
         for team_project in team_projects:
             if (
                 team_project.get("submityn") != "Y"
@@ -257,7 +259,7 @@ class KwangwoonUniversityApi:
 
     def _get_not_done_quizzes_info(self, quizzes: list[dict]) -> list[dict]:
         not_done_quizzes = []
-        today_date = datetime.datetime.now().strftime("%Y%m%d%H%M")
+        today_date = timezone.now().strftime("%Y%m%d%H%M")
         for quiz in quizzes:
             if (
                 quiz.get("issubmit") == "N"
@@ -279,7 +281,7 @@ class KwangwoonUniversityApi:
         expire_date_time = datetime.datetime.strptime(expire_date, date_format)
         if remove_timezone:
             expire_date_time = expire_date_time.replace(tzinfo=None)
-        now_time = datetime.datetime.now()
+        now_time = timezone.now()
         return expire_date_time - now_time
 
     async def get_todo_list(self) -> Optional[List[Dict]]:
