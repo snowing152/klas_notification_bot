@@ -15,6 +15,17 @@ import base64
 from app.utils import timezone
 
 
+# KLAS regularly drops idle keep-alive connections, and aiohttp only finds out
+# when the next request goes out on the dead socket. Every retried call here is
+# an idempotent read, so replaying one is safe.
+RETRYABLE_ERRORS = (aiohttp.ClientConnectionError, asyncio.TimeoutError)
+REQUEST_RETRIES = 2
+RETRY_DELAY_SECONDS = 1
+# Without this aiohttp waits its 5-minute default, and one hung KLAS request
+# stalls the notification cycle for every remaining user.
+REQUEST_TIMEOUT_SECONDS = 30
+
+
 class KwangwoonUniversityApi:
     def __init__(self) -> None:
         self.ua: UserAgent = UserAgent()
@@ -27,7 +38,9 @@ class KwangwoonUniversityApi:
         self.session: Optional[aiohttp.ClientSession] = None
 
     async def __aenter__(self):
-        self.session = aiohttp.ClientSession()
+        self.session = aiohttp.ClientSession(
+            timeout=aiohttp.ClientTimeout(total=REQUEST_TIMEOUT_SECONDS)
+        )
         return self
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
@@ -137,24 +150,64 @@ class KwangwoonUniversityApi:
             logging.error(f"An error occurred: {e}")
             return None
 
+    async def _post_json(
+        self, url: str, body: dict, headers: Optional[dict] = None
+    ) -> Optional[Dict]:
+        """POST a JSON body to KLAS and decode the JSON answer.
+
+        Returns None when KLAS answers with an error status or a body that is
+        not JSON. Connection-level failures are retried (see RETRYABLE_ERRORS)
+        and re-raised once the attempts run out, so a user whose data could not
+        be fetched at all still surfaces as an error rather than as "no data".
+        """
+        for attempt in range(REQUEST_RETRIES + 1):
+            try:
+                async with self.session.post(
+                    url=url,
+                    json=body,
+                    headers=headers or self.headers,
+                    cookies=self.cookies,
+                ) as response:
+                    if response.status != 200:
+                        logging.error(
+                            f"Failed to retrieve {url}. Status code: {response.status}"
+                        )
+                        return None
+                    try:
+                        return await response.json()
+                    except (aiohttp.ContentTypeError, json.JSONDecodeError) as e:
+                        # KLAS answers 200 with an empty body (and no
+                        # Content-Type) for records a student does not have yet
+                        # — a first-semester student querying grades, for
+                        # instance. Treat that as "no data" instead of letting
+                        # it blow up the calling handler.
+                        logging.error(f"Non-JSON response from {url}: {e}")
+                        return None
+            except RETRYABLE_ERRORS as e:
+                if attempt == REQUEST_RETRIES:
+                    logging.error(
+                        f"Request to {url} failed after {REQUEST_RETRIES + 1} "
+                        f"attempts: {e!r}"
+                    )
+                    raise
+                logging.warning(
+                    f"Connection error on {url} ({e!r}), "
+                    f"retrying in {RETRY_DELAY_SECONDS}s"
+                )
+                await asyncio.sleep(RETRY_DELAY_SECONDS)
+
     async def get_subjects(self) -> Optional[Dict]:
         if not self._cookies_is_valid():
             return None
 
-        url = "https://klas.kw.ac.kr/std/cmn/frame/YearhakgiAtnlcSbjectList.do"
+        response_data = await self._post_json(
+            "https://klas.kw.ac.kr/std/cmn/frame/YearhakgiAtnlcSbjectList.do", {}
+        )
+        if not response_data:
+            return None
 
-        async with self.session.post(
-            url=url, headers=self.headers, cookies=self.cookies, json={}
-        ) as response:
-            if response.status == 200:
-                response_data = await response.json()
-                logging.debug("Data about subjects retrieved successfully.")
-                return response_data[0]
-            else:
-                logging.error(
-                    f"Failed to retrieve data. Status code: {response.status}"
-                )
-                return None
+        logging.debug("Data about subjects retrieved successfully.")
+        return response_data[0]
 
     async def _make_lecture_request(
         self, url: str, subject_id: str, year: str
@@ -168,12 +221,7 @@ class KwangwoonUniversityApi:
             "selectChangeYn": "Y",
         }
 
-        async with self.session.post(
-            url=url, json=requests_body, headers=self.headers, cookies=self.cookies
-        ) as response:
-            if response.status == 200:
-                return await response.json()
-            return None
+        return await self._post_json(url, requests_body)
 
     async def _get_lectures(self, subject_id: str, year: str) -> Optional[Dict]:
         lectures_url = (
@@ -312,13 +360,20 @@ class KwangwoonUniversityApi:
                     self._get_quizzes(subject_id, year),
                 )
 
+                if None in (lectures, homeworks, team_projects, quizzes):
+                    # One rejected request should cost this subject's missing
+                    # category, not the whole user's todo list.
+                    logging.warning(
+                        f"Incomplete assignment data for subject {subject_id}"
+                    )
+
                 todo["todo"] = {
-                    "lectures": self._get_not_done_lectures_info(lectures),
-                    "homeworks": self._get_not_done_homeworks_info(homeworks),
+                    "lectures": self._get_not_done_lectures_info(lectures or []),
+                    "homeworks": self._get_not_done_homeworks_info(homeworks or []),
                     "team_projects": self._get_not_done_team_projects_info(
-                        team_projects
+                        team_projects or []
                     ),
-                    "quizzes": self._get_not_done_quizzes_info(quizzes),
+                    "quizzes": self._get_not_done_quizzes_info(quizzes or []),
                 }
 
             return todo_list
@@ -336,20 +391,7 @@ class KwangwoonUniversityApi:
             "User-Agent": self.ua.random,
         }
 
-        async with self.session.post(
-            url=url, json={}, headers=headers, cookies=self.cookies
-        ) as response:
-            if response.status != 200:
-                return None
-            try:
-                return await response.json()
-            except (aiohttp.ContentTypeError, json.JSONDecodeError) as e:
-                # KLAS answers 200 with an empty body (and no Content-Type) for
-                # records a student does not have yet — a first-semester student
-                # querying grades, for instance. Treat that as "no data" instead
-                # of letting it blow up the calling handler.
-                logging.error(f"Non-JSON response from {url}: {e}")
-                return None
+        return await self._post_json(url, {}, headers)
 
     async def _get_major_credits(self, major):
         if "전자정보공학대학" in major:

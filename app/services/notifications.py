@@ -63,6 +63,7 @@ async def check_todos():
             await asyncio.sleep(settings.NOTIFICATION_CHECK_INTERVAL)
             
             users = await get_all_users()
+            failed_users = 0
 
             for user in users:
                 try:
@@ -84,8 +85,17 @@ async def check_todos():
                             threshold: "" for threshold in TIME_THRESHOLDS.keys()
                         }
 
+                        # None means KLAS could not be read; an empty list means
+                        # the student genuinely has no subjects this semester.
+                        if todo_list is None:
+                            logging.warning(
+                                f"Could not retrieve assignments for user {user_id}"
+                            )
+                            failed_users += 1
+                            continue
+
                         if not todo_list:
-                            logging.debug(f"No todo list found for user {user_id}")
+                            logging.debug(f"No subjects found for user {user_id}")
                             continue
 
                         for subject in todo_list:
@@ -181,10 +191,17 @@ async def check_todos():
                     }
                 except Exception as e:
                     logging.error(f"Error processing user {user_id}: {e}")
+                    failed_users += 1
                     continue  # Skip to next user if there's an error
 
-            logging.info(
-                f"All notifications sent successfully, waiting for next interval"
-            )
+            if failed_users:
+                logging.warning(
+                    f"Notification cycle finished: {len(users) - failed_users}"
+                    f"/{len(users)} users checked, {failed_users} failed"
+                )
+            else:
+                logging.info(
+                    f"Notification cycle finished: all {len(users)} users checked"
+                )
         except Exception as e:
             logging.error(f"Error in check_todos: {e}")
