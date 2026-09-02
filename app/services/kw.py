@@ -339,9 +339,17 @@ class KwangwoonUniversityApi:
         async with self.session.post(
             url=url, json={}, headers=headers, cookies=self.cookies
         ) as response:
-            if response.status == 200:
+            if response.status != 200:
+                return None
+            try:
                 return await response.json()
-            return None
+            except (aiohttp.ContentTypeError, json.JSONDecodeError) as e:
+                # KLAS answers 200 with an empty body (and no Content-Type) for
+                # records a student does not have yet — a first-semester student
+                # querying grades, for instance. Treat that as "no data" instead
+                # of letting it blow up the calling handler.
+                logging.error(f"Non-JSON response from {url}: {e}")
+                return None
 
     async def _get_major_credits(self, major):
         if "전자정보공학대학" in major:

@@ -14,8 +14,8 @@ from app.utils.language_utils import get_user_language_with_fallback
 
 async def cmd_info(message: types.Message):
     try:
-        logging.info(f"User {message.from_user.id} used /info command")
         user_lang = await get_user_language_with_fallback(message)
+        logging.info(f"User {message.from_user.id} used /info command")
 
         user = await get_user(str(message.from_user.id))
 
