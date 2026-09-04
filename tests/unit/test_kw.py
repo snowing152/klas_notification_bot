@@ -1,3 +1,5 @@
+import base64
+
 import aiohttp
 import pytest
 from multidict import CIMultiDict, CIMultiDictProxy
@@ -26,11 +28,12 @@ def _content_type_error(url):
 class FakeResponse:
     """Minimal stand-in for aiohttp's response context manager."""
 
-    def __init__(self, status=200, payload=None, raises=None, url=None):
+    def __init__(self, status=200, payload=None, raises=None, url=None, text=None):
         self.status = status
         self.url = url
         self._payload = payload
         self._raises = raises
+        self._text = text
 
     async def __aenter__(self):
         return self
@@ -42,6 +45,11 @@ class FakeResponse:
         if self._raises:
             raise self._raises
         return self._payload
+
+    async def text(self):
+        if self._raises:
+            raise self._raises
+        return self._text
 
 
 class ConnectionFailure:
@@ -223,3 +231,97 @@ async def test_login_with_valid_cookies_returns_them():
 
     assert await api.login("student", "pw") == {"JSESSIONID": "fresh"}
     assert api.session.posts == 0, "an already-valid session needs no login round trip"
+
+
+QR_PAGE = (
+    '<main><iframe id="qrimg" src="https://did-3.kw.ac.kr/std/app/'
+    'myidauth.php?token=abc" width="100%"></iframe></main>'
+)
+# A one-pixel JPEG is enough: the test only cares that the bytes round-trip.
+PHOTO_BYTES = b"\xff\xd8\xffnot-really-a-jpeg"
+PHOTO_B64 = base64.b64encode(PHOTO_BYTES).decode()
+INFO_PAGE = (
+    '<div class="col-sm-5 text-center"><p class="p-10">'
+    f'<img alt="faceofperson" class="border" src="data:image/jpeg;base64,{PHOTO_B64}">'
+    "</p></div>"
+)
+# myidauth.php answers with nothing but a client-side redirect; the mobile-ID
+# session cookie it sets is the part that matters.
+AUTH_REDIRECT = '<script>location.replace("myidv2_main.php?menu=qid");</script>'
+
+
+class FakePhotoSession:
+    """Serves the photo chain: QR page POST, then the two mobile-ID GETs."""
+
+    def __init__(self, qr_page=QR_PAGE, auth=AUTH_REDIRECT, info=INFO_PAGE):
+        self._qr_page = qr_page
+        self._gets = [auth, info]
+        self.requested = []
+
+    def post(self, url, *args, **kwargs):
+        self.requested.append(url)
+        if isinstance(self._qr_page, (FakeResponse, ConnectionFailure)):
+            return self._qr_page
+        return FakeResponse(text=self._qr_page)
+
+    def get(self, url, *args, **kwargs):
+        self.requested.append(url)
+        outcome = self._gets.pop(0) if self._gets else None
+        if isinstance(outcome, (FakeResponse, ConnectionFailure)):
+            return outcome
+        return FakeResponse(text=outcome)
+
+
+def _photo_api(**kwargs):
+    api = KwangwoonUniversityApi()
+    api.cookies = {"JSESSIONID": "test"}
+    api.session = FakePhotoSession(**kwargs)
+    return api
+
+
+async def test_get_student_photo_decodes_the_inline_image():
+    """KLAS stopped rendering the photo itself: the QR page now only embeds a
+    mobile-ID iframe, and the photo there is a base64 data URI, not a URL."""
+    api = _photo_api()
+
+    assert await api.get_student_photo() == PHOTO_BYTES
+    assert api.session.requested == [
+        "https://klas.kw.ac.kr/std/sys/optrn/MyNumberQrStdPage.do",
+        "https://did-3.kw.ac.kr/std/app/myidauth.php?token=abc",
+        "https://did-3.kw.ac.kr/std/app/myidv2_main.php?menu=info",
+    ]
+
+
+async def test_get_student_photo_returns_none_without_cookies():
+    api = _photo_api()
+    api.cookies = {}
+
+    assert await api.get_student_photo() is None
+    assert api.session.requested == []
+
+
+async def test_get_student_photo_returns_none_without_the_iframe():
+    api = _photo_api(qr_page="<main>no iframe here</main>")
+
+    assert await api.get_student_photo() is None
+    assert len(api.session.requested) == 1, "nothing to follow without the token URL"
+
+
+async def test_get_student_photo_returns_none_when_the_photo_is_missing():
+    api = _photo_api(info="<div>no photo on this page</div>")
+
+    assert await api.get_student_photo() is None
+
+
+async def test_get_student_photo_returns_none_on_a_non_data_uri_source():
+    api = _photo_api(info='<img alt="faceofperson" src="/assets/placeholder.png">')
+
+    assert await api.get_student_photo() is None
+
+
+async def test_get_student_photo_survives_a_dropped_connection():
+    """The mobile-ID token lasts about a minute, so a retry still lands in time."""
+    api = _photo_api()
+    api.session._gets = [ConnectionFailure(), AUTH_REDIRECT, INFO_PAGE]
+
+    assert await api.get_student_photo() == PHOTO_BYTES

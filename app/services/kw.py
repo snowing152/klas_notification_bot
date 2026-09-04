@@ -600,34 +600,98 @@ class KwangwoonUniversityApi:
             "major_credits_for_each_semester": major_credits_for_each_semester,
         }
 
-    async def get_student_photo_url(self) -> Optional[str]:
+    @staticmethod
+    def _decode_data_uri(src: str) -> Optional[bytes]:
+        header, _, encoded = src.partition(",")
+        if not encoded or "base64" not in header:
+            logging.warning("Student photo is not an inline base64 image")
+            return None
+        try:
+            # b64decode raises binascii.Error, a ValueError subclass.
+            return base64.b64decode(encoded)
+        except ValueError as e:
+            logging.error(f"Could not decode student photo: {e}")
+            return None
+
+    @staticmethod
+    def _text_reader(url: str):
+        """Build a handler that returns a page's markup, or None on an error status."""
+
+        async def read_text(response) -> Optional[str]:
+            if response.status != 200:
+                logging.error(
+                    f"Failed to retrieve {url}. Status code: {response.status}"
+                )
+                return None
+            return await response.text()
+
+        return read_text
+
+    async def _get_html(self, url: str) -> Optional[str]:
+        return await self._request_with_retries(
+            url, lambda: self.session.get(url), self._text_reader(url)
+        )
+
+    async def get_student_photo(self) -> Optional[bytes]:
+        """Return the student's ID photo as JPEG bytes, or None.
+
+        KLAS itself no longer renders the photo: MyNumberQrStdPage.do only
+        embeds an iframe pointing at the mobile-ID site, carrying a token that
+        expires about a minute after the page is built — so the three requests
+        below have to run back to back. The photo on that page is an inline
+        base64 data URI, not a fetchable URL, which is why this returns bytes.
+        """
         if not self._cookies_is_valid():
             return None
+
+        qr_page_url = "https://klas.kw.ac.kr/std/sys/optrn/MyNumberQrStdPage.do"
+        info_url = "https://did-3.kw.ac.kr/std/app/myidv2_main.php?menu=info"
         body = {
             "selectedGrcode": "",
             "selectedYearhakgi": "",
             "selectedSubj": "",
         }
+
         try:
-            async with self.session.post(
-                "https://klas.kw.ac.kr/std/sys/optrn/MyNumberQrStdPage.do",
-                cookies=self.cookies,
-                headers=self.headers,
-                json=body,
-            ) as response:
-                if response.status == 200:
-                    soup = BeautifulSoup(await response.text(), "html.parser")
-                    # Update the selector based on the actual HTML structure
-                    img_tag = soup.select_one(".col-sm-5.text-center p.p-10 img")
-                    if not img_tag:
-                        # Try alternative selector
-                        img_tag = soup.select_one("img[alt='faceofperson']")
-                    if img_tag and img_tag.has_attr('src'):
-                        return img_tag.get("src")
-                    logging.warning("Could not find student photo image tag")
+            qr_page = await self._request_with_retries(
+                qr_page_url,
+                lambda: self.session.post(
+                    qr_page_url,
+                    cookies=self.cookies,
+                    headers=self.headers,
+                    json=body,
+                ),
+                self._text_reader(qr_page_url),
+            )
+            if not qr_page:
+                return None
+
+            iframe = BeautifulSoup(qr_page, "html.parser").select_one("iframe#qrimg")
+            if not iframe or not iframe.get("src"):
+                logging.warning("Could not find the mobile-ID iframe on the QR page")
+                return None
+
+            # The token URL answers with nothing but a JavaScript redirect; what
+            # matters is the mobile-ID session cookie it leaves in the jar, which
+            # is what authorises the personal-info page fetched next.
+            if await self._get_html(iframe["src"]) is None:
+                return None
+
+            info_page = await self._get_html(info_url)
+            if not info_page:
+                return None
+
+            img_tag = BeautifulSoup(info_page, "html.parser").select_one(
+                "img[alt='faceofperson']"
+            )
+            if not img_tag or not img_tag.get("src"):
+                logging.warning("Could not find student photo image tag")
+                return None
+
+            return self._decode_data_uri(img_tag["src"])
         except Exception as e:
-            logging.error(f"Failed to retrieve student photo URL: {e}")
-        return None
+            logging.error(f"Failed to retrieve student photo: {e}")
+            return None
 
 
 if __name__ == "__main__":
@@ -640,8 +704,8 @@ if __name__ == "__main__":
             await student.login(username, password)
             todo_list = await student.get_todo_list()
             student_info = await student.get_student_info()
-            student_photo_url = await student.get_student_photo_url()
-            print(student_photo_url)
+            student_photo = await student.get_student_photo()
+            print(f"student photo: {len(student_photo) if student_photo else 0} bytes")
             print(student_info)
             print(todo_list)
 

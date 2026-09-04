@@ -1,4 +1,3 @@
-import aiohttp
 import logging
 from pathlib import Path
 
@@ -43,15 +42,9 @@ async def cmd_info(message: types.Message):
             photo_path = photos_dir / f"student_{message.from_user.id}.jpg"
 
             if not photo_path.exists():
-                student_photo_url = await kw.get_student_photo_url()
-                if student_photo_url:
-                    async with aiohttp.ClientSession() as session:
-                        async with session.get(student_photo_url) as response:
-                            if response.status == 200:
-                                with open(photo_path, "wb") as f:
-                                    f.write(await response.read())
-
-            student_photo_file = FSInputFile(str(photo_path))
+                student_photo = await kw.get_student_photo()
+                if student_photo:
+                    photo_path.write_bytes(student_photo)
 
             msg = Strings.get(
                 "student_info",
@@ -76,7 +69,9 @@ async def cmd_info(message: types.Message):
 
             try:
                 if photo_path.exists():
-                    await message.reply_photo(photo=student_photo_file, caption=msg)
+                    await message.reply_photo(
+                        photo=FSInputFile(str(photo_path)), caption=msg
+                    )
                 else:
                     await message.reply(msg)
             except Exception as e:
