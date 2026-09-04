@@ -21,7 +21,12 @@ async def show_all_assignments(message: types.Message):
             return
 
         async with KwangwoonUniversityApi() as kw:
-            await kw.login(user.username, decrypt_password(user.encrypted_password))
+            if not await kw.login(
+                user.username, decrypt_password(user.encrypted_password)
+            ):
+                await message.answer(Strings.get("unexpected_error", user_lang))
+                return
+
             todo_list = await kw.get_todo_list()
 
             if not todo_list:

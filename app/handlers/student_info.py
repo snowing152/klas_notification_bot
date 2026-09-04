@@ -24,7 +24,12 @@ async def cmd_info(message: types.Message):
             return
 
         async with KwangwoonUniversityApi() as kw:
-            await kw.login(user.username, decrypt_password(user.encrypted_password))
+            if not await kw.login(
+                user.username, decrypt_password(user.encrypted_password)
+            ):
+                await message.answer(Strings.get("unexpected_error", user_lang))
+                return
+
             student_info = await kw.get_student_info()
 
             if not student_info:

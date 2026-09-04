@@ -26,8 +26,9 @@ def _content_type_error(url):
 class FakeResponse:
     """Minimal stand-in for aiohttp's response context manager."""
 
-    def __init__(self, status=200, payload=None, raises=None):
+    def __init__(self, status=200, payload=None, raises=None, url=None):
         self.status = status
+        self.url = url
         self._payload = payload
         self._raises = raises
 
@@ -144,3 +145,81 @@ async def test_get_subjects_returns_none_on_empty_payload():
     api = _api(FakeResponse(payload=[]))
 
     assert await api.get_subjects() is None
+
+
+LOGIN_FORM_URL = "https://klas.kw.ac.kr/usr/cmn/login/LoginForm.do"
+
+
+class FakeCookie:
+    def __init__(self, key, value):
+        self.key = key
+        self.value = value
+
+
+class FakeLoginSession:
+    """Serves KLAS's three-step login: form GET, public key POST, login POST."""
+
+    def __init__(self, *post_outcomes, form_url=LOGIN_FORM_URL):
+        self._post_outcomes = list(post_outcomes)
+        self._form_url = form_url
+        self.cookie_jar = [FakeCookie("JSESSIONID", "fresh")]
+        self.posts = 0
+
+    def get(self, *args, **kwargs):
+        # Answering from the form's own URL means "not logged in yet", which is
+        # what sends login() down the full three-step path.
+        return FakeResponse(url=self._form_url)
+
+    def post(self, *args, **kwargs):
+        outcome = self._post_outcomes[min(self.posts, len(self._post_outcomes) - 1)]
+        self.posts += 1
+        return outcome
+
+
+def _login_api(*post_outcomes, form_url=LOGIN_FORM_URL):
+    api = KwangwoonUniversityApi()
+    api.session = FakeLoginSession(*post_outcomes, form_url=form_url)
+    # The real encryptor needs a valid RSA key; the login flow under test does
+    # not care what the token contains.
+    api._encryptor = lambda public_key, data: "encrypted-token"
+    return api
+
+
+PUBLIC_KEY = FakeResponse(payload={"publicKey": "test-key"})
+
+
+async def test_login_retries_a_dropped_connection():
+    """Regression: KLAS dropping the login POST used to leave cookies empty,
+    and every later call reported 'No cookies found' instead of retrying."""
+    api = _login_api(
+        PUBLIC_KEY, ConnectionFailure(), FakeResponse(payload={"errorCount": 0})
+    )
+
+    assert await api.login("student", "pw") == {"JSESSIONID": "fresh"}
+    assert api.session.posts == 3, "the public key POST plus the retried login POST"
+
+
+async def test_login_returns_none_when_the_connection_never_recovers():
+    api = _login_api(PUBLIC_KEY, ConnectionFailure())
+
+    assert await api.login("student", "pw") is None
+    assert api.session.posts == 1 + kw_service.REQUEST_RETRIES + 1
+    assert api.cookies == {}
+
+
+async def test_login_returns_none_on_wrong_password():
+    api = _login_api(
+        PUBLIC_KEY,
+        FakeResponse(payload={"errorCount": 1, "fieldErrors": [{"message": "nope"}]}),
+    )
+
+    assert await api.login("student", "wrong") is None
+
+
+async def test_login_with_valid_cookies_returns_them():
+    """A redirect away from the login form means the session is still good.
+    This path used to return a bare 1, which no caller could use as cookies."""
+    api = _login_api(form_url="https://klas.kw.ac.kr/std/cmn/frame/Frame.do")
+
+    assert await api.login("student", "pw") == {"JSESSIONID": "fresh"}
+    assert api.session.posts == 0, "an already-valid session needs no login round trip"

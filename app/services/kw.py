@@ -56,6 +56,39 @@ class KwangwoonUniversityApi:
     def set_cookies(self, cookies: dict):
         self.cookies = cookies
 
+    def _cookies_from_jar(self) -> dict:
+        self.cookies = {cookie.key: cookie.value for cookie in self.session.cookie_jar}
+        return self.cookies
+
+    async def _request_with_retries(self, url: str, make_request, handle_response):
+        """Run one request, replaying it when the connection dies mid-flight.
+
+        `make_request` builds a fresh request context manager per attempt — a
+        replayed request cannot reuse the previous one — and `handle_response`
+        reads the response while it is still open.
+
+        Both login and the data endpoints go through here. Login used to sit
+        outside any retry, so a dropped keep-alive during the login POST left
+        self.cookies empty and every later call reported the misleading "No
+        cookies found. Please log in first." instead of simply retrying.
+        """
+        for attempt in range(REQUEST_RETRIES + 1):
+            try:
+                async with make_request() as response:
+                    return await handle_response(response)
+            except RETRYABLE_ERRORS as e:
+                if attempt == REQUEST_RETRIES:
+                    logging.error(
+                        f"Request to {url} failed after {REQUEST_RETRIES + 1} "
+                        f"attempts: {e!r}"
+                    )
+                    raise
+                logging.warning(
+                    f"Connection error on {url} ({e!r}), "
+                    f"retrying in {RETRY_DELAY_SECONDS}s"
+                )
+                await asyncio.sleep(RETRY_DELAY_SECONDS)
+
     async def login_with_cookies(self, cookies: dict) -> bool:
         self.set_cookies(cookies)
         login_form_url = "https://klas.kw.ac.kr/usr/cmn/login/LoginForm.do"
@@ -81,28 +114,47 @@ class KwangwoonUniversityApi:
         return encoded
 
     async def login(self, login_id: str, login_pwd: str) -> Optional[Dict]:
+        """Log in and return the session cookies, or None if that failed.
+
+        Never raises for a network fault: the callers treat a falsy answer as
+        "this user could not be read this time" and move on.
+        """
         login_form_url = "https://klas.kw.ac.kr/usr/cmn/login/LoginForm.do"
         public_key_url = "https://klas.kw.ac.kr/usr/cmn/login/LoginSecurity.do"
         login_url = "https://klas.kw.ac.kr/usr/cmn/login/LoginConfirm.do"
 
-        async with self.session.get(
-            login_form_url, cookies=self.cookies
-        ) as login_form_response:
-            if str(login_form_response.url) != login_form_url:
-                logging.info(
-                    f"Log in with cookies. Status code: {login_form_response.status}"
-                )
-                return 1
+        async def redirected_away_from_login_form(response) -> bool:
+            # KLAS bounces us off the login form when the cookies we already
+            # hold are still valid, so there is nothing left to log in to.
+            return str(response.url) != login_form_url
 
-        async with self.session.post(public_key_url) as public_key_response:
-            public_key_json = await public_key_response.json()
-            public_key_str = public_key_json["publicKey"]
+        async def read_public_key(response) -> str:
+            return (await response.json())["publicKey"]
 
-        login_data = {"loginId": login_id, "loginPwd": login_pwd, "storeIdYn": "Y"}
-        login_json = json.dumps(login_data)
+        async def read_login_result(response) -> Optional[Dict]:
+            if response.status != 200:
+                logging.error("Failed to communicate with server.")
+                logging.error(f"Status code: {response.status}")
+                return None
+            return await response.json()
 
         try:
-            encrypted_login = self._encryptor(public_key_str, login_json)
+            if await self._request_with_retries(
+                login_form_url,
+                lambda: self.session.get(login_form_url, cookies=self.cookies),
+                redirected_away_from_login_form,
+            ):
+                logging.info("Logged in with existing cookies.")
+                return self._cookies_from_jar()
+
+            public_key_str = await self._request_with_retries(
+                public_key_url,
+                lambda: self.session.post(public_key_url),
+                read_public_key,
+            )
+
+            login_data = {"loginId": login_id, "loginPwd": login_pwd, "storeIdYn": "Y"}
+            encrypted_login = self._encryptor(public_key_str, json.dumps(login_data))
             if not encrypted_login:
                 logging.error("Encryption failed")
                 return None
@@ -113,38 +165,35 @@ class KwangwoonUniversityApi:
                 "redirectTabUrl": "",
             }
 
-            async with self.session.post(
+            response_data = await self._request_with_retries(
                 login_url,
-                json=login_body,
-                headers=self.headers,
-                cookies=self.cookies,
-            ) as login_response:
-                if login_response.status == 200:
-                    response_data = await login_response.json()
-                    if response_data.get("errorCount", 0) == 0:
-                        logging.debug("Login successful.")
-                        self.cookies = {
-                            cookie.key: cookie.value
-                            for cookie in self.session.cookie_jar
-                        }
-                        return self.cookies
-                    elif (
-                        response_data.get("fieldErrors")[0].get("message")
-                        == "비밀번호 실패 5회 초과로 인하여 계정이 잠겼습니다.\n비밀번호 찾기를 이용해주세요."
-                    ):
-                        logging.error(
-                            "Login failed. Enter wrong password 5 times. Please reset password."
-                        )
-                        return None
-                    else:
-                        logging.error(
-                            "Failed to parse response. Login failed. Wrong password or ID"
-                        )
-                        return None
-                else:
-                    logging.error("Failed to communicate with server.")
-                    logging.error(f"Status code: {login_response.status}")
-                    return None
+                lambda: self.session.post(
+                    login_url,
+                    json=login_body,
+                    headers=self.headers,
+                    cookies=self.cookies,
+                ),
+                read_login_result,
+            )
+            if response_data is None:
+                return None
+
+            if response_data.get("errorCount", 0) == 0:
+                logging.debug("Login successful.")
+                return self._cookies_from_jar()
+            elif (
+                response_data.get("fieldErrors")[0].get("message")
+                == "비밀번호 실패 5회 초과로 인하여 계정이 잠겼습니다.\n비밀번호 찾기를 이용해주세요."
+            ):
+                logging.error(
+                    "Login failed. Enter wrong password 5 times. Please reset password."
+                )
+                return None
+            else:
+                logging.error(
+                    "Failed to parse response. Login failed. Wrong password or ID"
+                )
+                return None
 
         except Exception as e:
             logging.error(f"An error occurred: {e}")
@@ -160,41 +209,33 @@ class KwangwoonUniversityApi:
         and re-raised once the attempts run out, so a user whose data could not
         be fetched at all still surfaces as an error rather than as "no data".
         """
-        for attempt in range(REQUEST_RETRIES + 1):
-            try:
-                async with self.session.post(
-                    url=url,
-                    json=body,
-                    headers=headers or self.headers,
-                    cookies=self.cookies,
-                ) as response:
-                    if response.status != 200:
-                        logging.error(
-                            f"Failed to retrieve {url}. Status code: {response.status}"
-                        )
-                        return None
-                    try:
-                        return await response.json()
-                    except (aiohttp.ContentTypeError, json.JSONDecodeError) as e:
-                        # KLAS answers 200 with an empty body (and no
-                        # Content-Type) for records a student does not have yet
-                        # — a first-semester student querying grades, for
-                        # instance. Treat that as "no data" instead of letting
-                        # it blow up the calling handler.
-                        logging.error(f"Non-JSON response from {url}: {e}")
-                        return None
-            except RETRYABLE_ERRORS as e:
-                if attempt == REQUEST_RETRIES:
-                    logging.error(
-                        f"Request to {url} failed after {REQUEST_RETRIES + 1} "
-                        f"attempts: {e!r}"
-                    )
-                    raise
-                logging.warning(
-                    f"Connection error on {url} ({e!r}), "
-                    f"retrying in {RETRY_DELAY_SECONDS}s"
+
+        async def read_body(response) -> Optional[Dict]:
+            if response.status != 200:
+                logging.error(
+                    f"Failed to retrieve {url}. Status code: {response.status}"
                 )
-                await asyncio.sleep(RETRY_DELAY_SECONDS)
+                return None
+            try:
+                return await response.json()
+            except (aiohttp.ContentTypeError, json.JSONDecodeError) as e:
+                # KLAS answers 200 with an empty body (and no Content-Type) for
+                # records a student does not have yet — a first-semester student
+                # querying grades, for instance. Treat that as "no data" instead
+                # of letting it blow up the calling handler.
+                logging.error(f"Non-JSON response from {url}: {e}")
+                return None
+
+        return await self._request_with_retries(
+            url,
+            lambda: self.session.post(
+                url=url,
+                json=body,
+                headers=headers or self.headers,
+                cookies=self.cookies,
+            ),
+            read_body,
+        )
 
     async def get_subjects(self) -> Optional[Dict]:
         if not self._cookies_is_valid():
