@@ -9,6 +9,8 @@ images/photos/
 *.json
 # Deploy config has to be committed for Railway to read it
 !railway.json
+# Project-scope Claude Code plugin config, shared with the repo
+!.claude/settings.json
 *cache*
 log.txt
 logs/
