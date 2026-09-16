@@ -83,7 +83,12 @@ class KwangwoonUniversityApi:
                         f"attempts: {e!r}"
                     )
                     raise
-                logging.warning(
+                # KLAS drops idle keep-alives constantly and every one of
+                # these recovers on replay (see REQUEST_RETRIES above) — it
+                # was WARNING, but at ~200 of these a week it drowned out the
+                # rare case that actually matters: the "failed after N
+                # attempts" error a few lines up.
+                logging.info(
                     f"Connection error on {url} ({e!r}), "
                     f"retrying in {RETRY_DELAY_SECONDS}s"
                 )

@@ -6,7 +6,12 @@ from aiogram.fsm.state import State, StatesGroup
 
 from app.utils.encryption import encrypt_password
 from app.services.kw import KwangwoonUniversityApi
-from app.services.qr import library_login, get_secret_key
+from app.services.qr import (
+    library_login,
+    get_secret_key,
+    LibraryLoginError,
+    LibraryLoginRejected,
+)
 from app.database.database import (
     delete_user,
     save_user,
@@ -155,8 +160,21 @@ async def process_library_phone_number(message: types.Message, state: FSMContext
 
         encrypted_password = encrypt_password(password)
         secret = await get_secret_key("0" + username)
-        auth_key = await library_login(username, phone_number, password, secret)
-        if not auth_key:
+        try:
+            auth_key = await library_login(username, phone_number, password, secret)
+        except LibraryLoginRejected as e:
+            # result_code=1 is KLAS's "this isn't the phone number registered
+            # to this library account" - common enough (registered phone
+            # changed, or a typo) to tell the user exactly what to fix rather
+            # than the generic failure message.
+            if e.result_code == "1":
+                await message.answer(
+                    Strings.get("library_login_phone_mismatch", user_lang)
+                )
+            else:
+                await message.answer(Strings.get("library_login_failed", user_lang))
+            return
+        except LibraryLoginError:
             await message.answer(Strings.get("library_login_failed", user_lang))
             return
 
