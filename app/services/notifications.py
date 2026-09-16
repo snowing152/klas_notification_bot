@@ -37,7 +37,14 @@ MAX_CONCURRENT_USERS = 5
 
 async def send_notification(
     message: str, user_id: str, urgency_level: int, user_lang: Language = Language.EN
-):
+) -> bool:
+    """Send one threshold notification. Returns whether it actually went out.
+
+    A week of production logs had 332 cycles and not one line saying a
+    notification was ever sent - only send_notification's own except block
+    logged anything, on failure. The success line below is deliberately just
+    the user and threshold, never the assignment text it carries.
+    """
     try:
         emoji = TIME_THRESHOLDS.get(urgency_level, "📌")
         prefix = Strings.get(
@@ -45,8 +52,11 @@ async def send_notification(
         )
         postfix = Strings.get("notification_footer", user_lang)
         await bot.send_message(chat_id=user_id, text=prefix + message + postfix)
+        logging.info(f"Notification sent to {user_id} (threshold={urgency_level}h)")
+        return True
     except Exception as e:
         logging.error(f"Error sending notification to {user_id}: {e}")
+        return False
 
 
 async def start_notification_service():
@@ -60,11 +70,12 @@ async def start_notification_service():
         logging.error(f"Notification task failed: {e}")
 
 
-async def _process_user(user, notification_tracker: dict) -> bool:
+async def _process_user(user, notification_tracker: dict) -> tuple[bool, int]:
     """Check one user's assignments and send whatever crossed a threshold.
 
-    Returns True when the user's data was read, False when it could not be —
-    the caller only counts those, so one broken account never aborts a cycle.
+    Returns (success, notifications_sent). success is False when the user's
+    data could not be read at all - the caller only counts those, so one
+    broken account never aborts a cycle.
     """
     user_id = user.user_id
 
@@ -83,7 +94,7 @@ async def _process_user(user, notification_tracker: dict) -> bool:
                 user.username, decrypt_password(user.encrypted_password)
             ):
                 logging.warning(f"Could not log in as user {user_id}")
-                return False
+                return False, 0
 
             todo_list = await kw.get_todo_list()
 
@@ -95,11 +106,11 @@ async def _process_user(user, notification_tracker: dict) -> bool:
             # student genuinely has no subjects this semester.
             if todo_list is None:
                 logging.warning(f"Could not retrieve assignments for user {user_id}")
-                return False
+                return False, 0
 
             if not todo_list:
                 logging.debug(f"No subjects found for user {user_id}")
-                return True
+                return True, 0
 
             for subject in todo_list:
                 subject_name = subject.get("name", "Unknown Subject")
@@ -162,9 +173,11 @@ async def _process_user(user, notification_tracker: dict) -> bool:
                                     )
 
             # Send notifications for each threshold that has messages
+            sent_count = 0
             for threshold, message in threshold_messages.items():
                 if message:
-                    await send_notification(message, user_id, threshold, user_lang)
+                    if await send_notification(message, user_id, threshold, user_lang):
+                        sent_count += 1
                     await asyncio.sleep(1)
 
         # Clean up old assignments from tracker
@@ -181,19 +194,23 @@ async def _process_user(user, notification_tracker: dict) -> bool:
             if assignment_id in current_assignments
         }
 
-        return True
+        return True, sent_count
     except Exception as e:
         logging.error(f"Error processing user {user_id}: {e}")
-        return False
+        return False, 0
 
 
-async def _process_user_limited(user, notification_tracker: dict, semaphore) -> bool:
+async def _process_user_limited(
+    user, notification_tracker: dict, semaphore
+) -> tuple[bool, int]:
     async with semaphore:
         return await _process_user(user, notification_tracker)
 
 
-async def run_notification_cycle(users, notification_tracker: dict) -> int:
-    """Check every user, MAX_CONCURRENT_USERS at a time. Returns the failures.
+async def run_notification_cycle(users, notification_tracker: dict) -> tuple[int, int]:
+    """Check every user, MAX_CONCURRENT_USERS at a time.
+
+    Returns (failed_users, notifications_sent).
 
     Users used to be checked strictly one after another, so the cycle cost the
     sum of everyone's KLAS round trips — and a single user stuck in a retry
@@ -209,13 +226,22 @@ async def run_notification_cycle(users, notification_tracker: dict) -> int:
         return_exceptions=True,
     )
 
-    # _process_user handles its own errors, so an exception reaching here means
-    # the task itself broke. Count it rather than let it vanish into the list.
+    failed = 0
+    sent = 0
     for result in results:
+        # _process_user handles its own errors, so an exception reaching here
+        # means the task itself broke - count it rather than let it vanish.
         if isinstance(result, BaseException):
             logging.error(f"User check task failed: {result!r}")
+            failed += 1
+            continue
 
-    return sum(1 for result in results if result is not True)
+        success, sent_count = result
+        sent += sent_count
+        if not success:
+            failed += 1
+
+    return failed, sent
 
 
 async def check_todos():
@@ -227,16 +253,20 @@ async def check_todos():
             await asyncio.sleep(settings.NOTIFICATION_CHECK_INTERVAL)
 
             users = await get_all_users()
-            failed_users = await run_notification_cycle(users, notification_tracker)
+            failed_users, sent_count = await run_notification_cycle(
+                users, notification_tracker
+            )
 
             if failed_users:
                 logging.warning(
                     f"Notification cycle finished: {len(users) - failed_users}"
-                    f"/{len(users)} users checked, {failed_users} failed"
+                    f"/{len(users)} users checked, {failed_users} failed, "
+                    f"{sent_count} notifications sent"
                 )
             else:
                 logging.info(
-                    f"Notification cycle finished: all {len(users)} users checked"
+                    f"Notification cycle finished: all {len(users)} users checked, "
+                    f"{sent_count} notifications sent"
                 )
         except Exception as e:
             logging.error(f"Error in check_todos: {e}")
