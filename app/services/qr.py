@@ -13,6 +13,30 @@ BASE_URL = "https://mobileid.kw.ac.kr"
 _session = None
 
 
+class LibraryLoginError(Exception):
+    """The library service rejected the login itself (non-200, bad XML, ...).
+
+    __str__ is deliberately built here rather than left to the default
+    Exception formatting, so a bare `logging.error(e)` on this never repeats
+    the full response body (student id, phone number) that mobileid.kw.ac.kr
+    puts in it.
+    """
+
+
+class LibraryLoginRejected(LibraryLoginError):
+    """The library service understood the request and refused it.
+
+    `result_msg` is the student's own data reflected back by KLAS (it may
+    contain their phone number) - safe to show to that same user, but never
+    log it: only `result_code` goes into `str(self)`.
+    """
+
+    def __init__(self, result_code: str, result_msg: str):
+        self.result_code = result_code
+        self.result_msg = result_msg
+        super().__init__(f"Library login rejected (result_code={result_code})")
+
+
 async def get_session():
     global _session
     if _session is None or _session.closed:
@@ -60,6 +84,14 @@ async def get_secret_key(real_id: str) -> str:
 
 
 async def library_login(std_number: str, phone: str, password: str, secret: str) -> str:
+    """Log in to the library service and return the auth key.
+
+    Raises `LibraryLoginRejected` when the server understood the request and
+    refused it (e.g. result_code=1, "phone number not registered to this
+    account") and `LibraryLoginError` for anything else that kept an auth key
+    from coming back (bad status, unparseable XML). Never returns None -
+    callers that used to check `if not auth_key` should catch these instead.
+    """
     url = f"{BASE_URL}/mobile/MA/xml_login_and.php"
     encrypted_password = encrypt(password, secret)
     data = {
@@ -73,14 +105,28 @@ async def library_login(std_number: str, phone: str, password: str, secret: str)
     session = await get_session()
     async with session.post(url, data=data) as response:
         if response.status != 200:
-            logging.error(f"Failed to get auth key: {response.status}")
-            return None
+            logging.warning(f"Library login failed: HTTP {response.status}")
+            raise LibraryLoginError(f"http_status:{response.status}")
 
-        response_data = await response.text(encoding="iso-8859-1")
-        auth_key = parse_xml_response(response_data, "auth_key")
+        # The service replies in UTF-8 (its own XML declaration says so); the
+        # iso-8859-1 this used to hardcode mangled every non-ASCII byte,
+        # turning result_msg's Korean into mojibake.
+        response_data = await response.text(encoding="utf-8")
+        try:
+            auth_key = parse_xml_response(response_data, "auth_key")
+        except ET.ParseError:
+            logging.warning("Library login response was not valid XML")
+            raise LibraryLoginError("invalid_xml") from None
+
         if not auth_key:
-            logging.error(f"Failed to get auth key: {response_data}")
-            return None
+            # Log only the code - the full body carries the student's id and
+            # phone number back in plain text.
+            result_code = parse_xml_response(response_data, "result_code")
+            result_msg = parse_xml_response(response_data, "result_msg")
+            logging.warning(
+                f"Library login rejected (result_code={result_code})"
+            )
+            raise LibraryLoginRejected(result_code, result_msg)
 
         return auth_key
 
@@ -89,39 +135,40 @@ async def get_qr_code(real_id: str, auth_key: str) -> dict:
     url = f"{BASE_URL}/mobile/MA/xml_userInfo_auth.php"
     data = {"real_id": encode(real_id), "auth_key": auth_key, "new_check": "Y"}
 
-    async with ClientSession() as session:
-        async with session.post(url, data=data) as response:
-            if response.status != 200:
-                raise Exception(f"Failed to get QR code: {response.status}")
+    session = await get_session()
+    async with session.post(url, data=data) as response:
+        if response.status != 200:
+            raise Exception(f"Failed to get QR code: {response.status}")
 
-            response_data = await response.text(encoding="iso-8859-1")
-            try:
-                root = ET.fromstring(response_data)
-                return {
-                    "qr_code": (
-                        root.find(".//qr_code").text
-                        if root.find(".//qr_code") is not None
-                        else None
-                    ),
-                    # "user_name": (
-                    #     root.find(".//user_name").text
-                    #     if root.find(".//user_name") is not None
-                    #     else None
-                    # ),
-                    # "user_code": (
-                    #     root.find(".//user_code").text
-                    #     if root.find(".//user_code") is not None
-                    #     else None
-                    # ),
-                    # "user_deptName": (
-                    #     root.find(".//user_deptName").text
-                    #     if root.find(".//user_deptName") is not None
-                    #     else None
-                    # ),
-                }
-            except ET.ParseError as e:
-                print(f"Raw response: {response_data}")
-                raise Exception(f"Failed to parse XML response: {e}")
+        response_data = await response.text(encoding="utf-8")
+        try:
+            root = ET.fromstring(response_data)
+            return {
+                "qr_code": (
+                    root.find(".//qr_code").text
+                    if root.find(".//qr_code") is not None
+                    else None
+                ),
+                # "user_name": (
+                #     root.find(".//user_name").text
+                #     if root.find(".//user_name") is not None
+                #     else None
+                # ),
+                # "user_code": (
+                #     root.find(".//user_code").text
+                #     if root.find(".//user_code") is not None
+                #     else None
+                # ),
+                # "user_deptName": (
+                #     root.find(".//user_deptName").text
+                #     if root.find(".//user_deptName") is not None
+                #     else None
+                # ),
+            }
+        except ET.ParseError as e:
+            # Not logging response_data here either - same body, same PII.
+            logging.error(f"Failed to parse QR XML response: {e!r}")
+            raise Exception(f"Failed to parse XML response: {e}") from e
 
 
 def parse_xml_response(xml_string: str, tag: str) -> str:
