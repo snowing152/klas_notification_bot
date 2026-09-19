@@ -96,6 +96,30 @@ def create_donation_keyboard(user_lang: Language):
     return builder.as_markup()
 
 
+def create_show_filter_keyboard(user_lang: Language, current: str):
+    """Offers the views other than the one already on screen - only called
+    once the caller has confirmed both lectures and assignments exist, since
+    filtering into an empty category is never useful."""
+    builder = InlineKeyboardBuilder()
+    if current != "all":
+        builder.button(
+            text=Strings.get("show_filter_all", user_lang), callback_data="show_all"
+        )
+    if current != "lectures":
+        builder.button(
+            text=Strings.get("show_filter_lectures", user_lang),
+            callback_data="show_lectures",
+        )
+    if current != "assignments":
+        builder.button(
+            text=Strings.get("show_filter_assignments", user_lang),
+            callback_data="show_assignments",
+        )
+    builder.adjust(1)
+
+    return builder.as_markup()
+
+
 def create_settings_keyboard(user_lang: Language, settings_row):
     """One row per preference; the label carries its current state."""
 
