@@ -5,7 +5,15 @@ from app.bot import bot
 from app.config import settings
 
 from app.utils.encryption import decrypt_password
-from app.database.database import get_all_users, get_user_language
+from app.database.database import (
+    get_all_users,
+    get_notification_state,
+    get_sent_notifications,
+    get_user_language,
+    prune_sent_notifications,
+    record_sent_notifications,
+    update_notification_state,
+)
 from app.services.kw import KwangwoonUniversityApi
 from app.strings import Strings, Language
 
@@ -34,25 +42,87 @@ TYPE_EMOJIS = {
 # stop a slow user from holding up everyone behind them, not to fan out wide.
 MAX_CONCURRENT_USERS = 5
 
+# A single failed login is usually KLAS being KLAS. Three in a row (an hour and
+# a half apart) is the saved password no longer working - KW forces a change
+# every few months, and until now the bot just went quiet without saying why.
+LOGIN_FAILURES_BEFORE_WARNING = 3
+
+# Marks an assignment as already announced when it first appeared, as opposed
+# to the "t<hours>" kinds recorded for each deadline threshold.
+NEW_ASSIGNMENT_KIND = "new"
+
+# Pause between two messages to the same user, so a student with work due in
+# several brackets does not get them in one burst.
+SEND_DELAY_SECONDS = 1
+
+
+def assignment_key(subject_name: str, assignment_type: str, title: str) -> str:
+    """Stable identity for an assignment; KLAS gives them no id of their own."""
+    return f"{subject_name}_{assignment_type}_{title}"
+
+
+def format_left_time(left_time) -> str:
+    """Human-readable remaining time, e.g. "3d 4h" or "45m"."""
+    total_seconds = int(left_time.total_seconds())
+    days, remainder = divmod(max(total_seconds, 0), 86400)
+    hours, remainder = divmod(remainder, 3600)
+    minutes = remainder // 60
+
+    parts = []
+    if days:
+        parts.append(f"{days}d")
+    if hours:
+        parts.append(f"{hours}h")
+    if minutes or not parts:
+        parts.append(f"{minutes}m")
+    return " ".join(parts)
+
 
 async def send_notification(
     message: str, user_id: str, urgency_level: int, user_lang: Language = Language.EN
 ) -> bool:
-    """Send one threshold notification. Returns whether it actually went out.
+    """Send one deadline notification. Returns whether it actually went out.
+
+    The caller only records the notification as delivered when this says True,
+    so a message Telegram refused is retried on the next cycle instead of being
+    silently marked as sent.
+    """
+    emoji = TIME_THRESHOLDS.get(urgency_level, "📌")
+    prefix = Strings.get(
+        "notification_header", user_lang, emoji=emoji, hours=urgency_level
+    )
+    postfix = Strings.get("notification_footer", user_lang)
+    return await _send(
+        prefix + message + postfix, user_id, f" (threshold={urgency_level}h)"
+    )
+
+
+async def send_new_assignments(
+    message: str, user_id: str, user_lang: Language = Language.EN
+) -> bool:
+    """Announce assignments that just appeared in KLAS.
+
+    The deadline thresholds only start at 24 hours, so work posted a week in
+    advance stayed invisible until its last day.
+    """
+    return await _send(
+        Strings.get("new_assignments_header", user_lang) + message,
+        user_id,
+        " (new assignments)",
+    )
+
+
+async def _send(text: str, user_id: str, detail: str = "") -> bool:
+    """Deliver one message. `detail` names the kind for the log line only.
 
     A week of production logs had 332 cycles and not one line saying a
-    notification was ever sent - only send_notification's own except block
-    logged anything, on failure. The success line below is deliberately just
-    the user and threshold, never the assignment text it carries.
+    notification was ever sent - only the failure path logged anything. What
+    goes into the log is deliberately just the user and the kind, never the
+    assignment text the message carries.
     """
     try:
-        emoji = TIME_THRESHOLDS.get(urgency_level, "📌")
-        prefix = Strings.get(
-            "notification_header", user_lang, emoji=emoji, hours=urgency_level
-        )
-        postfix = Strings.get("notification_footer", user_lang)
-        await bot.send_message(chat_id=user_id, text=prefix + message + postfix)
-        logging.info(f"Notification sent to {user_id} (threshold={urgency_level}h)")
+        await bot.send_message(chat_id=user_id, text=text)
+        logging.info(f"Notification sent to {user_id}{detail}")
         return True
     except Exception as e:
         logging.error(f"Error sending notification to {user_id}: {e}")
@@ -70,8 +140,97 @@ async def start_notification_service():
         logging.error(f"Notification task failed: {e}")
 
 
-async def _process_user(user, notification_tracker: dict) -> tuple[bool, int]:
-    """Check one user's assignments and send whatever crossed a threshold.
+async def _handle_login_failure(user_id: str, state, user_lang: Language) -> None:
+    """Count a failed KLAS login and, once it is clearly the password, say so."""
+    failures = (getattr(state, "login_failures", 0) or 0) + 1
+    already_warned = bool(getattr(state, "credentials_warned", False))
+    await update_notification_state(user_id, login_failures=failures)
+
+    if failures < LOGIN_FAILURES_BEFORE_WARNING or already_warned:
+        return
+
+    if await _send(Strings.get("credentials_expired", user_lang), user_id):
+        await update_notification_state(user_id, credentials_warned=True)
+        logging.info(f"Warned user {user_id} that their KLAS password fails")
+
+
+async def _clear_login_failures(user_id: str, state) -> None:
+    if getattr(state, "login_failures", 0) or getattr(state, "credentials_warned", False):
+        await update_notification_state(
+            user_id, login_failures=0, credentials_warned=False
+        )
+
+
+def _collect_messages(todo_list, sent: dict, user_lang: Language) -> tuple:
+    """Build the messages this user is due, without sending anything yet.
+
+    Returns (new_assignments_message, new_entries, threshold_messages,
+    threshold_entries, current_keys) where the *_entries lists are the
+    (assignment_key, kind) pairs to record once the matching message is sent.
+    """
+    new_message = ""
+    new_entries = []
+    threshold_messages = {threshold: "" for threshold in TIME_THRESHOLDS}
+    threshold_entries = {threshold: [] for threshold in TIME_THRESHOLDS}
+    current_keys = set()
+
+    for subject in todo_list:
+        subject_name = subject.get("name", "Unknown Subject")
+
+        for assignment_type, emoji in TYPE_EMOJIS.items():
+            for assignment in subject["todo"].get(assignment_type, []):
+                title = assignment.get("title", "")
+                key = assignment_key(subject_name, assignment_type, title)
+                current_keys.add(key)
+
+                already_sent = sent.get(key, set())
+                left_time = assignment["left_time"]
+                type_label = Strings.get(f"type_{assignment_type}", user_lang)
+
+                if left_time.total_seconds() <= 0:
+                    # Past its deadline: KLAS still lists it, but there is
+                    # nothing left to warn about.
+                    continue
+
+                body = (
+                    f"{emoji} {subject_name}\n"
+                    f"{type_label}: {title}\n"
+                    + Strings.get(
+                        "time_left", user_lang, time_str=format_left_time(left_time)
+                    )
+                    + "\n\n"
+                )
+
+                if NEW_ASSIGNMENT_KIND not in already_sent:
+                    new_message += body
+                    new_entries.append((key, NEW_ASSIGNMENT_KIND))
+
+                # Only the tightest threshold the deadline still fits in: at
+                # 2h30m left that is the 3h alert, and the 6/12/24h ones are
+                # past, not pending. Breaking out also covers the last hour,
+                # which the old bounds check skipped entirely - with less than
+                # an hour left nothing matched "more than 0 hours".
+                hours_left = left_time.total_seconds() / 3600
+                for threshold in sorted(TIME_THRESHOLDS):
+                    if hours_left <= threshold:
+                        if f"t{threshold}" not in already_sent:
+                            threshold_messages[threshold] += body
+                            threshold_entries[threshold].append(
+                                (key, f"t{threshold}")
+                            )
+                        break
+
+    return (
+        new_message,
+        new_entries,
+        threshold_messages,
+        threshold_entries,
+        current_keys,
+    )
+
+
+async def _process_user(user) -> tuple[bool, int]:
+    """Check one user's assignments and send whatever is due.
 
     Returns (success, notifications_sent). success is False when the user's
     data could not be read at all - the caller only counts those, so one
@@ -80,10 +239,15 @@ async def _process_user(user, notification_tracker: dict) -> tuple[bool, int]:
     user_id = user.user_id
 
     try:
-        if user_id not in notification_tracker:
-            notification_tracker[user_id] = {}
-
         user_lang = await get_user_language(user_id) or Language.EN
+        state = await get_notification_state(user_id)
+
+        sent = await get_sent_notifications(user_id)
+        if sent is None:
+            # The database could not be read. Sending now would repeat
+            # notifications this user already has, so skip the cycle instead.
+            logging.warning(f"Could not read notification history for {user_id}")
+            return False, 0
 
         async with KwangwoonUniversityApi() as kw:
             # An unchecked login was the most common way a cycle failed: the
@@ -94,13 +258,12 @@ async def _process_user(user, notification_tracker: dict) -> tuple[bool, int]:
                 user.username, decrypt_password(user.encrypted_password)
             ):
                 logging.warning(f"Could not log in as user {user_id}")
+                await _handle_login_failure(user_id, state, user_lang)
                 return False, 0
 
-            todo_list = await kw.get_todo_list()
+            await _clear_login_failures(user_id, state)
 
-            threshold_messages = {
-                threshold: "" for threshold in TIME_THRESHOLDS.keys()
-            }
+            todo_list = await kw.get_todo_list()
 
             # None means KLAS could not be read; an empty list means the
             # student genuinely has no subjects this semester.
@@ -112,87 +275,41 @@ async def _process_user(user, notification_tracker: dict) -> tuple[bool, int]:
                 logging.debug(f"No subjects found for user {user_id}")
                 return True, 0
 
-            for subject in todo_list:
-                subject_name = subject.get("name", "Unknown Subject")
+            (
+                new_message,
+                new_entries,
+                threshold_messages,
+                threshold_entries,
+                current_keys,
+            ) = _collect_messages(todo_list, sent, user_lang)
 
-                # Check each type of assignment
-                for assignment_type, emoji in TYPE_EMOJIS.items():
-                    assignments = subject["todo"].get(assignment_type, [])
-                    if assignments:
-                        for assignment in assignments:
-                            # Create unique assignment identifier
-                            assignment_id = f"{subject_name}_{assignment_type}_{assignment.get('title', '')}"
-
-                            # Initialize assignment tracker if not exists
-                            if assignment_id not in notification_tracker[user_id]:
-                                notification_tracker[user_id][assignment_id] = set()
-
-                            left_time = assignment["left_time"].seconds
-                            days_left = assignment["left_time"].days
-                            hours_left = left_time // 3600
-                            title = assignment["title"]
-
-                            if abs(days_left) > 0:
-                                continue
-
-                            for threshold in TIME_THRESHOLDS.keys():
-                                if (
-                                    hours_left <= threshold
-                                    and hours_left
-                                    > max(
-                                        [
-                                            t
-                                            for t in TIME_THRESHOLDS.keys()
-                                            if t < threshold
-                                        ],
-                                        default=0,
-                                    )
-                                    and threshold
-                                    not in notification_tracker[user_id][assignment_id]
-                                ):  # Check if notification wasn't sent
-
-                                    type_label = Strings.get(
-                                        f"type_{assignment_type}", user_lang
-                                    )
-                                    time_str = (
-                                        f"{hours_left}h {left_time % 3600 // 60}m"
-                                    )
-                                    threshold_messages[threshold] += (
-                                        f"{emoji} {subject_name}\n"
-                                        f"{type_label}: {title}\n"
-                                        + Strings.get(
-                                            "time_left",
-                                            user_lang,
-                                            time_str=time_str,
-                                        )
-                                        + "\n\n"
-                                    )
-                                    # Mark this threshold as notified for this assignment
-                                    notification_tracker[user_id][assignment_id].add(
-                                        threshold
-                                    )
-
-            # Send notifications for each threshold that has messages
             sent_count = 0
+            seeded = bool(getattr(state, "seeded", False))
+            if not seeded:
+                # First cycle for this user: remember what they already have so
+                # the whole semester's backlog is not announced as brand new.
+                await record_sent_notifications(user_id, new_entries)
+                await update_notification_state(user_id, seeded=True)
+                logging.info(
+                    f"Seeded {len(new_entries)} existing assignments for {user_id}"
+                )
+            elif new_message:
+                if await send_new_assignments(new_message, user_id, user_lang):
+                    await record_sent_notifications(user_id, new_entries)
+                    sent_count += 1
+                await asyncio.sleep(SEND_DELAY_SECONDS)
+
             for threshold, message in threshold_messages.items():
                 if message:
                     if await send_notification(message, user_id, threshold, user_lang):
+                        await record_sent_notifications(
+                            user_id, threshold_entries[threshold]
+                        )
                         sent_count += 1
-                    await asyncio.sleep(1)
+                    await asyncio.sleep(SEND_DELAY_SECONDS)
 
-        # Clean up old assignments from tracker
-        current_assignments = {
-            f"{subject['name']}_{type_}_{assignment.get('title', '')}"
-            for subject in todo_list
-            for type_ in TYPE_EMOJIS.keys()
-            for assignment in subject["todo"].get(type_, [])
-        }
-
-        notification_tracker[user_id] = {
-            assignment_id: thresholds
-            for assignment_id, thresholds in notification_tracker[user_id].items()
-            if assignment_id in current_assignments
-        }
+        # Forget assignments KLAS no longer lists: submitted, or long expired.
+        await prune_sent_notifications(user_id, current_keys)
 
         return True, sent_count
     except Exception as e:
@@ -200,14 +317,12 @@ async def _process_user(user, notification_tracker: dict) -> tuple[bool, int]:
         return False, 0
 
 
-async def _process_user_limited(
-    user, notification_tracker: dict, semaphore
-) -> tuple[bool, int]:
+async def _process_user_limited(user, semaphore) -> tuple[bool, int]:
     async with semaphore:
-        return await _process_user(user, notification_tracker)
+        return await _process_user(user)
 
 
-async def run_notification_cycle(users, notification_tracker: dict) -> tuple[int, int]:
+async def run_notification_cycle(users) -> tuple[int, int]:
     """Check every user, MAX_CONCURRENT_USERS at a time.
 
     Returns (failed_users, notifications_sent).
@@ -219,10 +334,7 @@ async def run_notification_cycle(users, notification_tracker: dict) -> tuple[int
     semaphore = asyncio.Semaphore(MAX_CONCURRENT_USERS)
 
     results = await asyncio.gather(
-        *(
-            _process_user_limited(user, notification_tracker, semaphore)
-            for user in users
-        ),
+        *(_process_user_limited(user, semaphore) for user in users),
         return_exceptions=True,
     )
 
@@ -245,17 +357,13 @@ async def run_notification_cycle(users, notification_tracker: dict) -> tuple[int
 
 
 async def check_todos():
-    notification_tracker = {}
-
     while True:
         try:
             # Wait before checking notifications to avoid immediate execution on bot startup
             await asyncio.sleep(settings.NOTIFICATION_CHECK_INTERVAL)
 
             users = await get_all_users()
-            failed_users, sent_count = await run_notification_cycle(
-                users, notification_tracker
-            )
+            failed_users, sent_count = await run_notification_cycle(users)
 
             if failed_users:
                 logging.warning(

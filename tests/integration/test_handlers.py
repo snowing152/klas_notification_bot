@@ -64,7 +64,9 @@ async def test_cmd_unregister_deletes_every_trace_of_the_user(tmp_path, monkeypa
     """KLAS row, library row (second password + phone) and cached ID photo."""
     from app.database.database import (
         get_library_user,
+        get_sent_notifications,
         get_user,
+        record_sent_notifications,
         save_library_user,
         save_user,
     )
@@ -74,6 +76,7 @@ async def test_cmd_unregister_deletes_every_trace_of_the_user(tmp_path, monkeypa
     monkeypatch.setattr(student_info, "PHOTOS_DIR", tmp_path)
     await save_user("42", "2020123456", "enc", Language.EN)
     await save_library_user("42", "2020123456", "enc", "01012345678")
+    await record_sent_notifications("42", [("Algorithms_homeworks_Report", "new")])
     photo = student_info.student_photo_path("42")
     photo.write_bytes(b"jpeg")
 
@@ -83,6 +86,7 @@ async def test_cmd_unregister_deletes_every_trace_of_the_user(tmp_path, monkeypa
 
     assert await get_user("42") is None
     assert await get_library_user("42") is None
+    assert await get_sent_notifications("42") == {}
     assert not photo.exists()
     assert message.answer.call_args[0][0] == Strings.get("unregistered", Language.EN)
 
