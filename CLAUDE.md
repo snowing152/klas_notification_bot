@@ -43,8 +43,8 @@ imports `bot` directly, because it pushes messages without an incoming update.
 finishes first cancels the other. The notification loop (`check_todos`) sleeps
 `NOTIFICATION_CHECK_INTERVAL` (30 min), then, for every registered user, logs into KLAS
 with their decrypted password and emits at most one message per assignment per hour
-threshold (24/12/6/3/2/1). The already-sent set lives in an in-memory dict, so a restart
-re-sends the current thresholds.
+threshold (24/12/6/3/2/1), plus one when an assignment first appears. What has already
+been sent lives in SQLite - see below.
 
 **Notification state is in SQLite, not in memory.** `sent_notifications` holds one row
 per (user, assignment, kind) already delivered - `new` for the announcement when the
