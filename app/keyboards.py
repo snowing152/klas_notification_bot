@@ -146,6 +146,58 @@ def create_settings_keyboard(user_lang: Language, settings_row):
     return builder.as_markup()
 
 
+def create_account_keyboard(user_lang: Language, has_klas: bool, has_library: bool):
+    """One row per action; login rows reword to "log in again" once connected,
+    and info/search/delete only appear once there's something to act on."""
+    builder = InlineKeyboardBuilder()
+    builder.button(
+        text=Strings.get(
+            "account_relogin_klas" if has_klas else "account_login_klas", user_lang
+        ),
+        callback_data="account_klas",
+    )
+    builder.button(
+        text=Strings.get(
+            "account_relogin_library" if has_library else "account_login_library",
+            user_lang,
+        ),
+        callback_data="account_library",
+    )
+    if has_klas:
+        builder.button(
+            text=Strings.get("account_student_info", user_lang),
+            callback_data="account_info",
+        )
+    if has_library:
+        builder.button(
+            text=Strings.get("account_search_book", user_lang),
+            callback_data="account_search",
+        )
+    if has_klas or has_library:
+        builder.button(
+            text=Strings.get("account_delete", user_lang),
+            callback_data="account_delete",
+        )
+    builder.adjust(1)
+
+    return builder.as_markup()
+
+
+def create_account_delete_confirm_keyboard(user_lang: Language):
+    builder = InlineKeyboardBuilder()
+    builder.button(
+        text=Strings.get("account_delete_yes", user_lang),
+        callback_data="account_delete_yes",
+    )
+    builder.button(
+        text=Strings.get("account_delete_no", user_lang),
+        callback_data="account_delete_no",
+    )
+    builder.adjust(2)
+
+    return builder.as_markup()
+
+
 def create_announcement_keyboard(user_lang: Language, key: str):
     """Opt in or out of the feature an announcement is about, in one tap."""
     builder = InlineKeyboardBuilder()

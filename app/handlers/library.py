@@ -5,6 +5,8 @@ import tempfile
 
 from aiogram import Dispatcher, F, types
 from aiogram.filters import Command, CommandObject
+from aiogram.fsm.context import FSMContext
+from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import FSInputFile
 
 from app.services.qr import get_qr
@@ -14,6 +16,13 @@ from app.keyboards import quick_access_labels
 from app.utils.encryption import decrypt_password
 from app.services.library import search_book
 from app.utils.language_utils import get_user_language_with_fallback
+
+
+class SearchStates(StatesGroup):
+    """/account's "Find a book" button asks for a title with no /search
+    argument to parse, so it needs its own state instead of CommandObject."""
+
+    waiting_for_query = State()
 
 
 async def cmd_qr(message: types.Message):
@@ -58,6 +67,27 @@ async def cmd_qr(message: types.Message):
         await message.answer(Strings.get("unexpected_error", user_lang))
 
 
+async def send_book_search_results(message: types.Message, user_lang, query: str) -> None:
+    list_of_books = await search_book(query)
+
+    if not list_of_books:
+        await message.answer(Strings.get("no_books_found", user_lang))
+        return
+    for book in list_of_books:
+        message_text = f"📚 {book[0]}\n\n"
+        for info in book[2]:
+            message_text += f"📍 {info['location']}\n📦 {info['book_shell_number']}\n"
+            if info["status"]:
+                message_text += f"🔄 {info['status']} {info['return_date']}\n"
+            else:
+                message_text += "🔄 Available\n"
+            message_text += "\n"
+        if book[1]:
+            await message.answer_photo(book[1], caption=message_text)
+        else:
+            await message.answer(message_text)
+
+
 async def cmd_find_book(message: types.Message, command: CommandObject):
     try:
         user_lang = await get_user_language_with_fallback(message)
@@ -68,33 +98,25 @@ async def cmd_find_book(message: types.Message, command: CommandObject):
             await message.answer(Strings.get("please_enter_book_name", user_lang))
             return
 
-        list_of_books = await search_book(query)
-
-        if not list_of_books:
-            await message.answer(Strings.get("no_books_found", user_lang))
-            return
-        for book in list_of_books:
-            message_text = f"📚 {book[0]}\n\n"
-            for info in book[2]:
-                message_text += (
-                    f"📍 {info['location']}\n📦 {info['book_shell_number']}\n"
-                )
-                if info["status"]:
-                    message_text += f"🔄 {info['status']} {info['return_date']}\n"
-                else:
-                    message_text += "🔄 Available\n"
-                message_text += "\n"
-            if book[1]:
-                await message.answer_photo(book[1], caption=message_text)
-            else:
-                await message.answer(message_text)
-
+        await send_book_search_results(message, user_lang, query)
     except Exception as e:
         logging.error(f"Error in cmd_find_book: {e}")
         await message.answer(Strings.get("unexpected_error", user_lang))
+
+
+async def process_search_query(message: types.Message, state: FSMContext):
+    try:
+        user_lang = await get_user_language_with_fallback(message)
+        await send_book_search_results(message, user_lang, message.text)
+    except Exception as e:
+        logging.error(f"Error in process_search_query: {e}")
+        await message.answer(Strings.get("unexpected_error", user_lang))
+    finally:
+        await state.clear()
 
 
 def register_handlers(dp: Dispatcher):
     dp.message.register(cmd_qr, Command("qr"))
     dp.message.register(cmd_qr, F.text.in_(quick_access_labels("button_qr")))
     dp.message.register(cmd_find_book, Command("search"))
+    dp.message.register(process_search_query, SearchStates.waiting_for_query)

@@ -15,6 +15,7 @@ dp.message.middleware(AntiSpamMiddleware(limit=2))
 
 def setup_handlers(dp: Dispatcher):
     from app.handlers import (
+        account,
         auth,
         food,
         common,
@@ -33,6 +34,7 @@ def setup_handlers(dp: Dispatcher):
     student_info.register_handlers(dp)
     # Before callbacks: its handler answers every callback query it is offered
     settings_handlers.register_handlers(dp)
+    account.register_handlers(dp)
     callbacks.register_handlers(dp)
     admin.register_handlers(dp)
     news.register_handlers(dp)
