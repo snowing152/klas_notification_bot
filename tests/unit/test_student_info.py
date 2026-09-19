@@ -11,7 +11,12 @@ async def test_send_student_info_asks_unregistered_user_to_register():
 
     await send_student_info(bot, chat_id=42, user_id="no_such_user", user_lang=Language.EN)
 
-    bot.send_message.assert_awaited_once_with(
-        42, Strings.get("need_to_register", Language.EN)
+    assert bot.send_message.call_args[0] == (
+        42,
+        Strings.get("need_to_register", Language.EN),
     )
+    # A button leads straight into the registration FSM instead of leaving
+    # the user to type /register themselves
+    markup = bot.send_message.call_args.kwargs["reply_markup"]
+    assert markup.inline_keyboard[0][0].callback_data == "account_klas"
     bot.send_photo.assert_not_called()

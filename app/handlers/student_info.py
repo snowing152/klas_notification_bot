@@ -7,6 +7,7 @@ from aiogram.types import FSInputFile
 
 from app.strings import Strings
 from app.database.database import get_user
+from app.keyboards import create_login_klas_keyboard
 from app.services.kw import KwangwoonUniversityApi
 from app.utils.encryption import decrypt_password
 from app.utils.language_utils import get_user_language_with_fallback
@@ -26,7 +27,11 @@ async def send_student_info(bot, chat_id: int, user_id: str, user_lang) -> None:
     user = await get_user(user_id)
 
     if not user:
-        await bot.send_message(chat_id, Strings.get("need_to_register", user_lang))
+        await bot.send_message(
+            chat_id,
+            Strings.get("need_to_register", user_lang),
+            reply_markup=create_login_klas_keyboard(user_lang),
+        )
         return
 
     async with KwangwoonUniversityApi() as kw:

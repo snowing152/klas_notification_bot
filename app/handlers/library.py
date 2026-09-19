@@ -12,7 +12,7 @@ from aiogram.types import FSInputFile
 from app.services.qr import get_qr
 from app.strings import Strings
 from app.database.database import get_library_user
-from app.keyboards import quick_access_labels
+from app.keyboards import create_login_library_keyboard, quick_access_labels
 from app.utils.encryption import decrypt_password
 from app.services.library import search_book
 from app.utils.language_utils import get_user_language_with_fallback
@@ -30,7 +30,10 @@ async def cmd_qr(message: types.Message):
         user_lang = await get_user_language_with_fallback(message)
         user = await get_library_user(str(message.from_user.id))
         if not user:
-            await message.answer(Strings.get("library_user_not_found", user_lang))
+            await message.answer(
+                Strings.get("library_user_not_found", user_lang),
+                reply_markup=create_login_library_keyboard(user_lang),
+            )
             return
 
         os.makedirs("images", exist_ok=True)

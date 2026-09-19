@@ -183,6 +183,29 @@ def create_account_keyboard(user_lang: Language, has_klas: bool, has_library: bo
     return builder.as_markup()
 
 
+def create_login_klas_keyboard(user_lang: Language):
+    """One button leading straight into the registration FSM, for dead ends
+    that used to just tell the user to type /register themselves."""
+    builder = InlineKeyboardBuilder()
+    builder.button(
+        text=Strings.get("account_login_klas", user_lang), callback_data="account_klas"
+    )
+    builder.adjust(1)
+
+    return builder.as_markup()
+
+
+def create_login_library_keyboard(user_lang: Language):
+    builder = InlineKeyboardBuilder()
+    builder.button(
+        text=Strings.get("account_login_library", user_lang),
+        callback_data="account_library",
+    )
+    builder.adjust(1)
+
+    return builder.as_markup()
+
+
 def create_account_delete_confirm_keyboard(user_lang: Language):
     builder = InlineKeyboardBuilder()
     builder.button(

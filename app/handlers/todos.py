@@ -4,7 +4,7 @@ from aiogram import Dispatcher, F, types
 
 from app.strings import Strings
 from app.database.database import get_user
-from app.keyboards import quick_access_labels
+from app.keyboards import create_login_klas_keyboard, quick_access_labels
 from app.utils.encryption import decrypt_password
 from app.services.kw import KwangwoonUniversityApi
 from app.utils.language_utils import get_user_language_with_fallback
@@ -18,7 +18,10 @@ async def show_all_assignments(message: types.Message):
         user = await get_user(user_id)
 
         if not user:
-            await message.answer(Strings.get("need_to_register", user_lang))
+            await message.answer(
+                Strings.get("need_to_register", user_lang),
+                reply_markup=create_login_klas_keyboard(user_lang),
+            )
             return
 
         async with KwangwoonUniversityApi() as kw:
