@@ -69,3 +69,34 @@ class NotificationState(Base):
     # why their notifications stopped.
     login_failures = Column(Integer, nullable=False, default=0)
     credentials_warned = Column(Boolean, nullable=False, default=False)
+
+
+class UserSettings(Base):
+    """Per-user notification preferences, defaults chosen to match old behaviour."""
+
+    __tablename__ = "user_settings"
+
+    user_id = Column(String, primary_key=True)
+    new_assignment_alerts = Column(Boolean, nullable=False, default=True)
+    deadline_alerts = Column(Boolean, nullable=False, default=True)
+    # Only the 6/3/1 hour thresholds, for students who found six messages per
+    # assignment too much.
+    urgent_thresholds_only = Column(Boolean, nullable=False, default=False)
+    # KLAS deadlines are usually 23:59, so the 24h and 12h warnings land at
+    # night. Held notifications go out on the first cycle after quiet_end.
+    quiet_hours = Column(Boolean, nullable=False, default=True)
+    quiet_start = Column(Integer, nullable=False, default=23)
+    quiet_end = Column(Integer, nullable=False, default=8)
+
+
+class AnnouncementSeen(Base):
+    """Which feature announcements a user has already been shown.
+
+    Keyed rather than dated: a redeploy must not re-announce a feature, and a
+    new announcement must reach users who joined before it existed.
+    """
+
+    __tablename__ = "announcements_seen"
+
+    user_id = Column(String, primary_key=True)
+    key = Column(String, primary_key=True)

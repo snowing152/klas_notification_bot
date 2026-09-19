@@ -80,3 +80,69 @@ def create_donation_keyboard(user_lang: Language):
     builder.adjust(3)
     
     return builder.as_markup()
+
+
+def create_settings_keyboard(user_lang: Language, settings_row):
+    """One row per preference; the label carries its current state."""
+
+    def state(value: bool) -> str:
+        return Strings.get("state_on" if value else "state_off", user_lang)
+
+    builder = InlineKeyboardBuilder()
+    builder.button(
+        text=Strings.get(
+            "settings_new_assignments",
+            user_lang,
+            state=state(settings_row.new_assignment_alerts),
+        ),
+        callback_data="settings_new",
+    )
+    builder.button(
+        text=Strings.get(
+            "settings_deadline_alerts",
+            user_lang,
+            state=state(settings_row.deadline_alerts),
+        ),
+        callback_data="settings_deadline",
+    )
+    builder.button(
+        text=Strings.get(
+            "settings_urgent_only",
+            user_lang,
+            state=state(settings_row.urgent_thresholds_only),
+        ),
+        callback_data="settings_urgent",
+    )
+    builder.button(
+        text=Strings.get(
+            "settings_quiet_hours",
+            user_lang,
+            state=state(settings_row.quiet_hours),
+            start=settings_row.quiet_start,
+            end=settings_row.quiet_end,
+        ),
+        callback_data="settings_quiet",
+    )
+    builder.button(
+        text=Strings.get("settings_language_button", user_lang),
+        callback_data="settings_language",
+    )
+    builder.adjust(1)
+
+    return builder.as_markup()
+
+
+def create_announcement_keyboard(user_lang: Language, key: str):
+    """Opt in or out of the feature an announcement is about, in one tap."""
+    builder = InlineKeyboardBuilder()
+    builder.button(
+        text=Strings.get("announcement_enable", user_lang),
+        callback_data=f"announce_on_{key}",
+    )
+    builder.button(
+        text=Strings.get("announcement_dismiss", user_lang),
+        callback_data=f"announce_off_{key}",
+    )
+    builder.adjust(2)
+
+    return builder.as_markup()

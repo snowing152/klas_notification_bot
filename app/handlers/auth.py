@@ -16,6 +16,7 @@ from app.database.database import (
     delete_library_user,
     delete_notification_data,
     delete_user,
+    delete_user_settings,
     save_user,
     save_library_user,
 )
@@ -110,6 +111,7 @@ async def cmd_unregister(message: types.Message):
         await delete_user(user_id)
         await delete_library_user(user_id)
         await delete_notification_data(user_id)
+        await delete_user_settings(user_id)
         student_photo_path(user_id).unlink(missing_ok=True)
         await message.answer(Strings.get("unregistered", user_lang))
         logging.info(f"User {message.from_user.id} unregistered")

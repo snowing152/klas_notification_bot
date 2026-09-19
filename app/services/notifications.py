@@ -10,12 +10,14 @@ from app.database.database import (
     get_notification_state,
     get_sent_notifications,
     get_user_language,
+    get_user_settings,
     prune_sent_notifications,
     record_sent_notifications,
     update_notification_state,
 )
 from app.services.kw import KwangwoonUniversityApi
 from app.strings import Strings, Language
+from app.utils import timezone
 
 
 # Define time thresholds in hours and their corresponding emoji indicators
@@ -51,9 +53,41 @@ LOGIN_FAILURES_BEFORE_WARNING = 3
 # to the "t<hours>" kinds recorded for each deadline threshold.
 NEW_ASSIGNMENT_KIND = "new"
 
+# What "urgent only" keeps: one warning a day before nothing, then the last
+# hours. The full set is every key of TIME_THRESHOLDS.
+URGENT_THRESHOLDS = (1, 3, 6)
+
+# Quiet hours hold everything except these: a deadline one or two hours away
+# is exactly the case worth waking someone for.
+QUIET_HOURS_EXEMPT = (1, 2)
+
 # Pause between two messages to the same user, so a student with work due in
 # several brackets does not get them in one burst.
 SEND_DELAY_SECONDS = 1
+
+
+def enabled_thresholds(settings_row) -> list:
+    """The deadline thresholds this user wants, tightest first."""
+    if getattr(settings_row, "urgent_thresholds_only", False):
+        return sorted(URGENT_THRESHOLDS)
+    return sorted(TIME_THRESHOLDS)
+
+
+def in_quiet_hours(settings_row, now=None) -> bool:
+    """Is it the user's night right now? Times are Korean local, like KLAS."""
+    if not getattr(settings_row, "quiet_hours", False):
+        return False
+
+    hour = (now or timezone.now()).hour
+    start = getattr(settings_row, "quiet_start", 23)
+    end = getattr(settings_row, "quiet_end", 8)
+
+    if start == end:
+        return False
+    if start < end:
+        return start <= hour < end
+    # The usual case: the window crosses midnight (23:00 to 08:00).
+    return hour >= start or hour < end
 
 
 def assignment_key(subject_name: str, assignment_type: str, title: str) -> str:
@@ -161,13 +195,16 @@ async def _clear_login_failures(user_id: str, state) -> None:
         )
 
 
-def _collect_messages(todo_list, sent: dict, user_lang: Language) -> tuple:
+def _collect_messages(
+    todo_list, sent: dict, user_lang: Language, thresholds=None
+) -> tuple:
     """Build the messages this user is due, without sending anything yet.
 
     Returns (new_assignments_message, new_entries, threshold_messages,
     threshold_entries, current_keys) where the *_entries lists are the
     (assignment_key, kind) pairs to record once the matching message is sent.
     """
+    thresholds = sorted(TIME_THRESHOLDS) if thresholds is None else thresholds
     new_message = ""
     new_entries = []
     threshold_messages = {threshold: "" for threshold in TIME_THRESHOLDS}
@@ -211,7 +248,7 @@ def _collect_messages(todo_list, sent: dict, user_lang: Language) -> tuple:
                 # which the old bounds check skipped entirely - with less than
                 # an hour left nothing matched "more than 0 hours".
                 hours_left = left_time.total_seconds() / 3600
-                for threshold in sorted(TIME_THRESHOLDS):
+                for threshold in thresholds:
                     if hours_left <= threshold:
                         if f"t{threshold}" not in already_sent:
                             threshold_messages[threshold] += body
@@ -241,6 +278,7 @@ async def _process_user(user) -> tuple[bool, int]:
     try:
         user_lang = await get_user_language(user_id) or Language.EN
         state = await get_notification_state(user_id)
+        user_settings = await get_user_settings(user_id)
 
         sent = await get_sent_notifications(user_id)
         if sent is None:
@@ -275,13 +313,21 @@ async def _process_user(user) -> tuple[bool, int]:
                 logging.debug(f"No subjects found for user {user_id}")
                 return True, 0
 
+            thresholds = (
+                enabled_thresholds(user_settings)
+                if getattr(user_settings, "deadline_alerts", True)
+                else []
+            )
             (
                 new_message,
                 new_entries,
                 threshold_messages,
                 threshold_entries,
                 current_keys,
-            ) = _collect_messages(todo_list, sent, user_lang)
+            ) = _collect_messages(todo_list, sent, user_lang, thresholds)
+
+            quiet = in_quiet_hours(user_settings)
+            wants_new = getattr(user_settings, "new_assignment_alerts", True)
 
             sent_count = 0
             seeded = bool(getattr(state, "seeded", False))
@@ -293,6 +339,14 @@ async def _process_user(user) -> tuple[bool, int]:
                 logging.info(
                     f"Seeded {len(new_entries)} existing assignments for {user_id}"
                 )
+            elif new_message and not wants_new:
+                # Switched off: record it so turning the setting back on does
+                # not announce everything that piled up in the meantime.
+                await record_sent_notifications(user_id, new_entries)
+            elif new_message and quiet:
+                # Held until the quiet hours are over; nothing is recorded, so
+                # the next daytime cycle picks it up.
+                logging.debug(f"Holding new assignments for {user_id} (quiet hours)")
             elif new_message:
                 if await send_new_assignments(new_message, user_id, user_lang):
                     await record_sent_notifications(user_id, new_entries)
@@ -300,7 +354,12 @@ async def _process_user(user) -> tuple[bool, int]:
                 await asyncio.sleep(SEND_DELAY_SECONDS)
 
             for threshold, message in threshold_messages.items():
-                if message:
+                if message and quiet and threshold not in QUIET_HOURS_EXEMPT:
+                    logging.debug(
+                        f"Holding the {threshold}h notification for {user_id} "
+                        f"(quiet hours)"
+                    )
+                elif message:
                     if await send_notification(message, user_id, threshold, user_lang):
                         await record_sent_notifications(
                             user_id, threshold_entries[threshold]

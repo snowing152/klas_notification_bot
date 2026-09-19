@@ -46,10 +46,24 @@ with their decrypted password and emits at most one message per assignment per h
 threshold (24/12/6/3/2/1). The already-sent set lives in an in-memory dict, so a restart
 re-sends the current thresholds.
 
+**Notification state is in SQLite, not in memory.** `sent_notifications` holds one row
+per (user, assignment, kind) already delivered - `new` for the announcement when the
+assignment appeared, `t<hours>` for each deadline threshold - so a restart cannot repeat
+a message, and a send Telegram refused is left unrecorded and retried next cycle.
+`notification_state` carries the per-user `seeded` flag (the first cycle records existing
+work silently, so switching a user on never dumps a semester into the chat) and the
+consecutive-login-failure counter behind the "your KLAS password stopped working"
+warning. `user_settings` holds the `/settings` switches, defaulting to the old behaviour;
+quiet hours are read through `timezone.now()`, so they are Korean local hours.
+`announcements_seen` is keyed by announcement name, which is what makes
+`app/services/announcements.py` safe to run on every startup.
+
 **Handler registration order matters.** `setup_handlers` registers `common` *last*
 because `common.other_message` is a catch-all `dp.message.register` with no filter — it
 swallows anything reaching it and routes free text to the LLM. Anything registered after
-it would never fire. Registration and library-registration flows are aiogram FSM states
+it would never fire. `callbacks.process_callback_query` is likewise unfiltered for callback queries, so
+`settings` is registered before it - anything registered after would never see a tap.
+Registration and library-registration flows are aiogram FSM states
 (`app/handlers/auth.py`) with `MemoryStorage`, so an in-progress registration is lost on
 restart.
 

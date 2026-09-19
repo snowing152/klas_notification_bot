@@ -5,11 +5,13 @@ from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
 
 from app.database.models import (
+    AnnouncementSeen,
     Base,
     LibraryUser,
     NotificationState,
     SentNotification,
     User,
+    UserSettings,
 )
 from app.strings import Language
 from app.config import settings
@@ -309,4 +311,83 @@ async def delete_notification_data(user_id: str) -> bool:
             except SQLAlchemyError as e:
                 await session.rollback()
                 logging.error(f"Error deleting notification data: {e}")
+                return False
+
+
+async def get_user_settings(user_id: str):
+    """The user's notification preferences, created with defaults on first use."""
+    async with AsyncSessionLocal() as session:
+        async with session.begin():
+            try:
+                settings_row = await session.get(UserSettings, user_id)
+                if settings_row is None:
+                    settings_row = UserSettings(user_id=user_id)
+                    session.add(settings_row)
+                    await session.commit()
+                return settings_row
+            except SQLAlchemyError as e:
+                await session.rollback()
+                logging.error(f"Error getting user settings: {e}")
+                return None
+
+
+async def update_user_settings(user_id: str, **fields) -> bool:
+    async with AsyncSessionLocal() as session:
+        async with session.begin():
+            try:
+                settings_row = await session.get(UserSettings, user_id)
+                if settings_row is None:
+                    settings_row = UserSettings(user_id=user_id)
+                    session.add(settings_row)
+                for name, value in fields.items():
+                    setattr(settings_row, name, value)
+                await session.commit()
+                return True
+            except SQLAlchemyError as e:
+                await session.rollback()
+                logging.error(f"Error updating user settings: {e}")
+                return False
+
+
+async def has_seen_announcement(user_id: str, key: str) -> bool:
+    async with AsyncSessionLocal() as session:
+        try:
+            seen = await session.get(AnnouncementSeen, {"user_id": user_id, "key": key})
+            return seen is not None
+        except SQLAlchemyError as e:
+            logging.error(f"Error reading announcement state: {e}")
+            # Treat an unreadable row as seen: a repeated announcement is worse
+            # than a missed one.
+            return True
+
+
+async def mark_announcement_seen(user_id: str, key: str) -> bool:
+    async with AsyncSessionLocal() as session:
+        async with session.begin():
+            try:
+                session.add(AnnouncementSeen(user_id=user_id, key=key))
+                await session.commit()
+                return True
+            except SQLAlchemyError as e:
+                await session.rollback()
+                logging.error(f"Error marking announcement as seen: {e}")
+                return False
+
+
+async def delete_user_settings(user_id: str) -> bool:
+    """Forget a user's preferences and announcement history - part of /unregister."""
+    async with AsyncSessionLocal() as session:
+        async with session.begin():
+            try:
+                await session.execute(
+                    delete(UserSettings).where(UserSettings.user_id == user_id)
+                )
+                await session.execute(
+                    delete(AnnouncementSeen).where(AnnouncementSeen.user_id == user_id)
+                )
+                await session.commit()
+                return True
+            except SQLAlchemyError as e:
+                await session.rollback()
+                logging.error(f"Error deleting user settings: {e}")
                 return False

@@ -6,6 +6,7 @@ from app.database.database import (
     get_notification_state,
     get_sent_notifications,
     update_notification_state,
+    update_user_settings,
 )
 from app.services import notifications
 
@@ -59,8 +60,20 @@ def make_todo(title="Report 1", hours=48, subject="Algorithms", type_="homeworks
     ]
 
 
-def _patch_user_deps(monkeypatch, api, bot=None):
+class FakeClock:
+    """Freezes Korean local time, so a test's result does not depend on when
+    the suite happens to run - quiet hours are on by default."""
+
+    def __init__(self, hour):
+        self.hour = hour
+
+    def now(self):
+        return datetime.datetime(2026, 9, 20, self.hour, 0)
+
+
+def _patch_user_deps(monkeypatch, api, bot=None, hour=12):
     bot = bot or FakeBot()
+    monkeypatch.setattr(notifications, "timezone", FakeClock(hour))
     monkeypatch.setattr(notifications, "KwangwoonUniversityApi", lambda: api)
     monkeypatch.setattr(notifications, "decrypt_password", lambda p: "password")
     monkeypatch.setattr(notifications, "bot", bot)
@@ -351,3 +364,105 @@ async def test_send_notification_logs_the_send_without_the_assignment_text(
 
     assert "Notification sent to 42 (threshold=3h)" in caplog.text
     assert "Secret essay title" not in caplog.text
+
+
+async def _threshold_only_user(user_id="1"):
+    """Seeded and with new-assignment alerts off, so only thresholds speak."""
+    await update_notification_state(user_id, seeded=True)
+    await update_user_settings(user_id, new_assignment_alerts=False)
+
+
+def _thresholds_recorded(sent: dict) -> set:
+    kinds = set().union(*sent.values()) if sent else set()
+    return {kind for kind in kinds if kind.startswith("t")}
+
+
+async def test_quiet_hours_hold_the_day_ahead_reminder(monkeypatch):
+    """KLAS deadlines are usually 23:59, so the 24h warning lands at night."""
+    await _threshold_only_user()
+    api = FakeApi(login_result={"JSESSIONID": "x"}, todo_list=make_todo(hours=20))
+    bot = _patch_user_deps(monkeypatch, api, hour=2)
+
+    await notifications._process_user(FakeUser("1"))
+    assert bot.sent == [], "the 24h reminder woke the student at 02:00"
+    assert _thresholds_recorded(await get_sent_notifications("1")) == set(), (
+        "held, not swallowed"
+    )
+
+    daytime = _patch_user_deps(monkeypatch, api, hour=9)
+    await notifications._process_user(FakeUser("1"))
+    assert len(daytime.sent) == 1, "the held reminder never arrived in the morning"
+    assert _thresholds_recorded(await get_sent_notifications("1")) == {"t24"}
+
+
+async def test_quiet_hours_let_the_last_hours_through(monkeypatch):
+    """A deadline two hours away is worth waking someone for."""
+    await _threshold_only_user()
+    bot = _patch_user_deps(
+        monkeypatch,
+        FakeApi(login_result={"JSESSIONID": "x"}, todo_list=make_todo(hours=1.5)),
+        hour=2,
+    )
+
+    await notifications._process_user(FakeUser("1"))
+
+    assert len(bot.sent) == 1
+
+
+async def test_quiet_hours_can_be_switched_off(monkeypatch):
+    await _threshold_only_user()
+    await update_user_settings("1", quiet_hours=False)
+    bot = _patch_user_deps(
+        monkeypatch,
+        FakeApi(login_result={"JSESSIONID": "x"}, todo_list=make_todo(hours=20)),
+        hour=2,
+    )
+
+    await notifications._process_user(FakeUser("1"))
+
+    assert len(bot.sent) == 1
+
+
+async def test_urgent_only_drops_the_wider_thresholds(monkeypatch):
+    await _threshold_only_user()
+    await update_user_settings("1", urgent_thresholds_only=True)
+    api = FakeApi(login_result={"JSESSIONID": "x"}, todo_list=make_todo(hours=20))
+    bot = _patch_user_deps(monkeypatch, api)
+
+    await notifications._process_user(FakeUser("1"))
+    assert bot.sent == [], "20h left is not urgent"
+
+    api._todo_list = make_todo(hours=5)
+    await notifications._process_user(FakeUser("1"))
+    assert len(bot.sent) == 1, "the 6h threshold still fires"
+
+
+async def test_deadline_alerts_can_be_switched_off(monkeypatch):
+    await _threshold_only_user()
+    await update_user_settings("1", deadline_alerts=False)
+    bot = _patch_user_deps(
+        monkeypatch,
+        FakeApi(login_result={"JSESSIONID": "x"}, todo_list=make_todo(hours=0.5)),
+    )
+
+    await notifications._process_user(FakeUser("1"))
+
+    assert bot.sent == []
+
+
+async def test_new_assignment_alerts_off_still_records_the_assignment(monkeypatch):
+    """Otherwise switching the setting back on announces the whole backlog."""
+    await update_notification_state("1", seeded=True)
+    await update_user_settings("1", new_assignment_alerts=False)
+    api = FakeApi(login_result={"JSESSIONID": "x"}, todo_list=make_todo(hours=100))
+    bot = _patch_user_deps(monkeypatch, api)
+
+    await notifications._process_user(FakeUser("1"))
+    assert bot.sent == []
+    assert await get_sent_notifications("1") == {
+        "Algorithms_homeworks_Report 1": {"new"}
+    }
+
+    await update_user_settings("1", new_assignment_alerts=True)
+    await notifications._process_user(FakeUser("1"))
+    assert bot.sent == [], "old work was announced as new after switching on"

@@ -23,6 +23,7 @@ def setup_handlers(dp: Dispatcher):
         admin,
         news,
         library,
+        settings as settings_handlers,
     )
 
     # Register all handlers
@@ -30,6 +31,8 @@ def setup_handlers(dp: Dispatcher):
     todos.register_handlers(dp)
     food.register_handlers(dp)
     student_info.register_handlers(dp)
+    # Before callbacks: its handler answers every callback query it is offered
+    settings_handlers.register_handlers(dp)
     callbacks.register_handlers(dp)
     admin.register_handlers(dp)
     news.register_handlers(dp)

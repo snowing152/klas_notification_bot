@@ -215,6 +215,7 @@ graph TD
 
 | Command       | Description                                                     |
 | ------------- | --------------------------------------------------------------- |
+| `/settings`   | ⚙️ Notification preferences (see below)                         |
 | `/language`   | 🌍 Change interface language (requires registration to persist) |
 | `/unregister` | 🗑️ Delete stored credentials                                    |
 | `/donate`     | 💝 Support the developer                                        |
@@ -237,12 +238,26 @@ Simply send any text message to chat with the AI about university life!
 
 ## 🔔 Smart Notifications
 
-The bot automatically monitors your KLAS account and sends notifications for:
+The bot checks your KLAS account every 30 minutes and messages you about:
 
-- 📅 **Upcoming Deadlines** - Assignments due soon
-- 🎯 **New Tasks** - Recently posted assignments
-- ⏰ **Lecture Reminders** - Unwatched lectures
-- 📊 **Progress Updates** - Academic milestone tracking
+- 🆕 **New work** - announced as soon as it appears in KLAS, not only on its last day
+- 📅 **Approaching deadlines** - at 24, 12, 6, 3, 2 and 1 hours left
+- 🔐 **A password that stopped working** - after three failed logins in a row,
+  instead of going quiet
+
+Each notification is sent once and remembered in the database, so a restart or a
+deploy does not repeat it.
+
+`/settings` controls all of it per user:
+
+| Setting             | Default     | What it does                                            |
+| ------------------- | ----------- | ------------------------------------------------------- |
+| New assignments     | on          | Announce work when it appears                            |
+| Deadline reminders  | on          | The 24/12/6/3/2/1 hour warnings                          |
+| Urgent only         | off         | Keeps only the 6, 3 and 1 hour warnings                  |
+| Quiet hours         | on, 23-08   | Holds notifications until morning; the 1 and 2 hour ones still go out |
+
+Quiet hours are Korean local time, like everything else that touches KLAS dates.
 
 ---
 
