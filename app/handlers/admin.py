@@ -65,7 +65,7 @@ def get_message_for_user(user, messages: dict[str, str]) -> str:
     message keys are lowercased, so the lookup has to be case-insensitive.
     """
     user_lang = (getattr(user, "language", None) or "en").lower()
-    return messages.get(user_lang) or messages.get("en", "")
+    return messages.get(user_lang) or messages.get("en") or next(iter(messages.values()), "")
 
 
 def parse_multilanguage_message(content: str) -> dict[str, str]:
