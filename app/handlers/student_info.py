@@ -11,6 +11,14 @@ from app.services.kw import KwangwoonUniversityApi
 from app.utils.encryption import decrypt_password
 from app.utils.language_utils import get_user_language_with_fallback
 
+PHOTOS_DIR = Path("images/photos")
+
+
+def student_photo_path(user_id) -> Path:
+    """Where /info caches a student's ID photo; /unregister deletes it."""
+    return PHOTOS_DIR / f"student_{user_id}.jpg"
+
+
 async def cmd_info(message: types.Message):
     try:
         user_lang = await get_user_language_with_fallback(message)
@@ -37,9 +45,8 @@ async def cmd_info(message: types.Message):
                 )
                 return
 
-            photos_dir = Path("images/photos")
-            photos_dir.mkdir(parents=True, exist_ok=True)
-            photo_path = photos_dir / f"student_{message.from_user.id}.jpg"
+            PHOTOS_DIR.mkdir(parents=True, exist_ok=True)
+            photo_path = student_photo_path(message.from_user.id)
 
             if not photo_path.exists():
                 student_photo = await kw.get_student_photo()

@@ -13,12 +13,14 @@ from app.services.qr import (
     LibraryLoginRejected,
 )
 from app.database.database import (
+    delete_library_user,
     delete_user,
     save_user,
     save_library_user,
 )
 from app.strings import Strings
 from app.utils.language_utils import get_user_language_with_fallback
+from app.handlers.student_info import student_photo_path
 
 
 # Define states for registration
@@ -101,7 +103,12 @@ async def cmd_unregister(message: types.Message):
     try:
         user_lang = await get_user_language_with_fallback(message)
 
-        await delete_user(str(message.from_user.id))
+        user_id = str(message.from_user.id)
+        # "Delete my data" means all of it: the library row holds a second
+        # password and the phone number, and the cached ID photo is a face.
+        await delete_user(user_id)
+        await delete_library_user(user_id)
+        student_photo_path(user_id).unlink(missing_ok=True)
         await message.answer(Strings.get("unregistered", user_lang))
         logging.info(f"User {message.from_user.id} unregistered")
         await message.delete()

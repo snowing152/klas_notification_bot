@@ -57,3 +57,45 @@ async def test_unregistered_user_falls_back_to_client_language():
     assert message.answer.call_args[0][0] == Strings.get(
         "language_choice", Language.KO
     )
+
+
+@pytest.mark.asyncio
+async def test_cmd_unregister_deletes_every_trace_of_the_user(tmp_path, monkeypatch):
+    """KLAS row, library row (second password + phone) and cached ID photo."""
+    from app.database.database import (
+        get_library_user,
+        get_user,
+        save_library_user,
+        save_user,
+    )
+    from app.handlers import student_info
+    from app.handlers.auth import cmd_unregister
+
+    monkeypatch.setattr(student_info, "PHOTOS_DIR", tmp_path)
+    await save_user("42", "2020123456", "enc", Language.EN)
+    await save_library_user("42", "2020123456", "enc", "01012345678")
+    photo = student_info.student_photo_path("42")
+    photo.write_bytes(b"jpeg")
+
+    message = make_message(user_id="42")
+    message.delete = AsyncMock()
+    await cmd_unregister(message)
+
+    assert await get_user("42") is None
+    assert await get_library_user("42") is None
+    assert not photo.exists()
+    assert message.answer.call_args[0][0] == Strings.get("unregistered", Language.EN)
+
+
+@pytest.mark.asyncio
+async def test_cmd_unregister_works_for_a_user_with_nothing_stored(tmp_path, monkeypatch):
+    from app.handlers import student_info
+    from app.handlers.auth import cmd_unregister
+
+    monkeypatch.setattr(student_info, "PHOTOS_DIR", tmp_path)
+    message = make_message(user_id="nobody")
+    message.delete = AsyncMock()
+
+    await cmd_unregister(message)
+
+    assert message.answer.call_args[0][0] == Strings.get("unregistered", Language.EN)
