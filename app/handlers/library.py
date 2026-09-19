@@ -3,13 +3,14 @@ import logging
 import asyncio
 import tempfile
 
-from aiogram import Dispatcher, types
+from aiogram import Dispatcher, F, types
 from aiogram.filters import Command, CommandObject
 from aiogram.types import FSInputFile
 
 from app.services.qr import get_qr
 from app.strings import Strings
 from app.database.database import get_library_user
+from app.keyboards import quick_access_labels
 from app.utils.encryption import decrypt_password
 from app.services.library import search_book
 from app.utils.language_utils import get_user_language_with_fallback
@@ -95,4 +96,5 @@ async def cmd_find_book(message: types.Message, command: CommandObject):
 
 def register_handlers(dp: Dispatcher):
     dp.message.register(cmd_qr, Command("qr"))
+    dp.message.register(cmd_qr, F.text.in_(quick_access_labels("button_qr")))
     dp.message.register(cmd_find_book, Command("search"))

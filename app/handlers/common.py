@@ -104,17 +104,6 @@ async def other_message(message: types.Message):
         elif message.content_type == types.ContentType.REFUNDED_PAYMENT:
             pass
 
-        # Handle quick access keyboard button presses
-        elif message.text == "🔍 QR":
-            from app.handlers.library import cmd_qr
-            await cmd_qr(message)
-            return
-            
-        elif message.text == "📋 Todos":
-            from app.handlers.todos import show_all_assignments
-            await show_all_assignments(message)
-            return
-            
         elif message.content_type == types.ContentType.PHOTO:
             await message.reply(
                 "Photo is not available in the chat. Please use the command from the bot menu."

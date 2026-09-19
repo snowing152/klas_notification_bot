@@ -8,9 +8,13 @@ def create_quick_access_keyboard(user_lang: Language):
     keyboard = ReplyKeyboardMarkup(
         keyboard=[
             [
-                KeyboardButton(text="📋 Todos"),
-                KeyboardButton(text="🔍 QR"),
-            ]
+                KeyboardButton(text=Strings.get("button_todos", user_lang)),
+                KeyboardButton(text=Strings.get("button_qr", user_lang)),
+            ],
+            [
+                KeyboardButton(text=Strings.get("button_menu", user_lang)),
+                KeyboardButton(text=Strings.get("button_news", user_lang)),
+            ],
         ],
         resize_keyboard=True,
         is_persistent=True,
@@ -18,6 +22,16 @@ def create_quick_access_keyboard(user_lang: Language):
         input_field_placeholder=Strings.get("input_field_placeholder", user_lang)
     )
     return keyboard
+
+
+def quick_access_labels(key: str) -> frozenset:
+    """Every language's label for a quick-access button, e.g. for a message
+    filter. The reply keyboard is client-side and only refreshes on the next
+    message carrying reply_markup, so a user who just switched language may
+    still be looking at labels in the old one - matching against all three
+    survives that instead of routing the tap to the LLM.
+    """
+    return frozenset(Strings.get(key, lang) for lang in Language)
 
 
 def create_language_keyboard():

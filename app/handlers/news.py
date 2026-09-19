@@ -1,9 +1,9 @@
 import logging
-from aiogram import Dispatcher, types
+from aiogram import Dispatcher, F, types
 from aiogram.filters import Command
 
 from app.strings import Strings
-from app.keyboards import create_news_keyboard
+from app.keyboards import create_news_keyboard, quick_access_labels
 from app.utils.language_utils import get_user_language_with_fallback
 
 
@@ -24,3 +24,4 @@ async def cmd_news(message: types.Message):
 
 def register_handlers(dp: Dispatcher):
     dp.message.register(cmd_news, Command("news"))
+    dp.message.register(cmd_news, F.text.in_(quick_access_labels("button_news")))

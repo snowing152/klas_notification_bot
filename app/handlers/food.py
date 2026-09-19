@@ -1,9 +1,9 @@
 import logging
-from aiogram import Dispatcher, types
+from aiogram import Dispatcher, F, types
 from aiogram.filters import Command
 
 from app.strings import Strings
-from app.keyboards import create_food_menu_keyboard
+from app.keyboards import create_food_menu_keyboard, quick_access_labels
 from app.services.food import get_today_school_food_menu
 from app.utils.language_utils import get_user_language_with_fallback
 
@@ -24,3 +24,6 @@ async def show_school_food_menu(message: types.Message):
 
 def register_handlers(dp: Dispatcher):
     dp.message.register(show_school_food_menu, Command("menu"))
+    dp.message.register(
+        show_school_food_menu, F.text.in_(quick_access_labels("button_menu"))
+    )

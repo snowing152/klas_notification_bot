@@ -1,9 +1,10 @@
 import logging
 from aiogram.filters import Command
-from aiogram import Dispatcher, types
+from aiogram import Dispatcher, F, types
 
 from app.strings import Strings
 from app.database.database import get_user
+from app.keyboards import quick_access_labels
 from app.utils.encryption import decrypt_password
 from app.services.kw import KwangwoonUniversityApi
 from app.utils.language_utils import get_user_language_with_fallback
@@ -97,3 +98,6 @@ async def show_all_assignments(message: types.Message):
 
 def register_handlers(dp: Dispatcher):
     dp.message.register(show_all_assignments, Command("show"))
+    dp.message.register(
+        show_all_assignments, F.text.in_(quick_access_labels("button_todos"))
+    )
