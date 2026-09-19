@@ -15,21 +15,18 @@ class Strings:
             "test_string": "Welcome, Test User!",
             "nonexistent_key": "Nonexistent key",
             "welcome": """Welcome, {name}! 👋
-I'm a helpful bot for Kwangwoon University students 🏫
-I track your assignments and send reminders for upcoming deadlines 🧭
+I'm a helper bot for Kwangwoon University students 🏫
+I track your KLAS assignments and remind you before deadlines 🧭
 
-Here's how to get started:
-• /register - Set up your account
-• /unregister - Delete your account 
-• /language - Choose your preferred language
-• /show - View all your upcoming tasks
-• /search book_name - Find books in the library 🔍
+Try the buttons below, or:
+• /account - connect KLAS and the library
+• /show - see what's due
+• /menu, /news - dining and campus news
 
-You can also chat with me directly about university-related questions!
-Find more helpful commands by tapping the menu button at the bottom left of your screen!
+You can also just ask me anything about the university - no command needed!
+More options live in the menu button in the bottom left of the chat.
 
-If something is not working or you have a problem, feel free to contact me @bulochkaskefirochkom 💬
-I'll help you out quickly!
+If something's not working, message me @bulochkaskefirochkom 💬 I'll sort it out quickly!
 """,
             "enter_username": "🎓 Please enter your student ID (I'll keep this secure)",
             "enter_password": "🔑 Please enter your KLAS password (this will be encrypted)",
@@ -39,8 +36,8 @@ I'll help you out quickly!
             "invalid_credentials": "Hmm, those credentials don't seem to match our records. Please check your username and password, then try /register again 🔄",
             "library_login_failed": "We couldn't log you into the library with those details. Please verify your username, password and phone number, then try /lregister again 🔄",
             "library_login_phone_mismatch": "The library only accepts logins from the phone number registered on your library account. Please double-check the phone number and try /lregister again 🔄",
-            "registration_successful": "🎉 Registration complete! You'll now receive helpful notifications. Explore available features with /show or /info",
-            "library_registration_successful": "🎉 Library access granted! You can now use the awesome library features, such as /qr",
+            "registration_successful": "🎉 You're all set! I can already see your KLAS assignments and will remind you before each deadline. It'll be quiet for a bit while I get familiar with what's already on your plate - that's normal, not a bug.\n\nNext: open /account to connect your library card too, for QR passes and book search.",
+            "library_registration_successful": "🎉 Library connected! Grab your QR pass with /qr, or search the catalog from /account → 🔍 Find a book.",
             "registration_failed": "We couldn't complete your registration. Please check your details and try again with /register 🔄",
             "failed_to_save_credentials": "We had a small issue saving your credentials. Please try again later.",
             "unregistered": "You've successfully unregistered from the bot. You can always register again! 👋",
@@ -151,20 +148,17 @@ Tap a line to switch it.""",
             "test_string": "환영합니다!",
             "welcome": """안녕하세요, {name}님! 👋
 광운대학교 학생들을 위한 도우미 봇입니다 🏫
-과제를 추적하고 마감일 알림을 보내드려요 🧭
+KLAS 과제를 추적하고 마감일 전에 알려드려요 🧭
 
-시작하는 방법:
-• /register - 계정을 등록하세요
-• /unregister - 계정을 삭제하세요
-• /language - 원하는 언어를 선택하세요
-• /show - 예정된 모든 과제를 확인하세요
-• /search 책이름 - 도서관에서 책을 검색하세요 🔍
+아래 버튼을 눌러보시거나:
+• /account - KLAS와 도서관 계정을 연결하세요
+• /show - 마감이 다가오는 일정을 확인하세요
+• /menu, /news - 식당 메뉴와 학교 소식
 
-저와 직접 대화하면서 대학 관련 질문을 하실 수도 있어요!
-더 많은 유용한 명령어는 화면 왼쪽 하단의 메뉴 버튼에서 확인하실 수 있어요
+명령어 없이도 대학 관련 질문을 자유롭게 물어보실 수 있어요!
+더 많은 기능은 화면 왼쪽 하단의 메뉴 버튼에서 확인하세요.
 
-무언가 작동하지 않거나 문제가 있으시면 @bulochkaskefirochkom 에게 연락주세요 💬
-빠르게 도와드리겠습니다!""",
+무언가 작동하지 않으면 @bulochkaskefirochkom 에게 연락주세요 💬 빠르게 도와드릴게요!""",
             "enter_username": "🎓 학번을 입력해주세요 (안전하게 보관됩니다)",
             "enter_password": "🔑 KLAS 비밀번호를 입력해주세요 (암호화됩니다)",
             "enter_phone_number": "📱 전화번호를 입력해주세요",
@@ -173,8 +167,8 @@ Tap a line to switch it.""",
             "invalid_credentials": "입력하신 정보가 기록과 일치하지 않네요. 사용자 이름과 비밀번호를 확인하고 /register 로 다시 시도해주세요 🔄",
             "library_login_failed": "입력하신 정보로 도서관 로그인을 할 수 없었어요. 사용자 이름, 비밀번호, 전화번호를 확인하고 /lregister 로 다시 시도해주세요 🔄",
             "library_login_phone_mismatch": "도서관에 등록된 휴대폰 번호로만 로그인할 수 있어요. 전화번호를 다시 확인하고 /lregister 로 다시 시도해주세요 🔄",
-            "registration_successful": "🎉 등록이 완료되었습니다! 이제 유용한 알림을 받을 수 있습니다. /show 또는 /info 명령어로 기능을 살펴보세요",
-            "library_registration_successful": "🎉 도서관 접근 권한이 부여되었습니다! 이제 /qr과 같은 도서관 기능을 사용할 수 있습니다",
+            "registration_successful": "🎉 등록 완료! 이미 KLAS 과제를 확인하고 있고, 마감일 전에 알려드릴게요. 처음에는 조용할 수 있는데, 이미 있는 과제를 파악하는 중이라 그런 거니 걱정 마세요.\n\n다음 단계: /account 에서 도서관 계정도 연결하면 QR 출입증과 책 검색을 사용할 수 있어요.",
+            "library_registration_successful": "🎉 도서관 연결 완료! /qr로 QR 출입증을 받거나, /account → 🔍 책 찾기로 카탈로그를 검색해보세요.",
             "registration_failed": "등록을 완료할 수 없습니다. 세부 정보를 확인하고 /register로 다시 시도해 주세요 🔄",
             "failed_to_save_credentials": "자격 증명을 저장하는 데 작은 문제가 있었습니다. 나중에 다시 시도해 주세요.",
             "unregistered": "봇에서 성공적으로 등록이 취소되었습니다. 언제든지 다시 등록할 수 있습니다! 👋",
@@ -282,20 +276,17 @@ Tap a line to switch it.""",
             "test_string": "Добро пожаловать!",
             "welcome": """Привет, {name}! 👋
 Я бот-помощник для студентов университета Квангвун 🏫
-Я отслеживаю задания и отправляю уведомления о сроках 🧭
+Я отслеживаю задания в KLAS и напоминаю о сроках 🧭
 
-Как начать:
-• /register - зарегистрируйте свой аккаунт
-• /unregister - удалите свой аккаунт
-• /language - выберите удобный язык
-• /show - просмотрите все предстоящие задания
-• /search название_книги - найдите книгу в библиотеке 🔍
+Попробуйте кнопки ниже, или:
+• /account - подключите KLAS и библиотеку
+• /show - что скоро сдавать
+• /menu, /news - меню столовой и новости университета
 
-Вы также можете напрямую общаться со мной и задавать вопросы об университете!
-Больше полезных команд доступно в меню в левом нижнем углу экрана!
+Можете также просто спросить меня о чём угодно про университет - без команд!
+Больше возможностей - в меню в левом нижнем углу экрана.
 
-Если что-то не работает или у вас есть проблемы, напишите мне @bulochkaskefirochkom 💬
-Я исправлю всё быстро!
+Если что-то не работает, напишите мне @bulochkaskefirochkom 💬 Я быстро всё исправлю!
 """,
             "enter_username": "🎓 Введите ваш студенческий номер",
             "enter_password": "🔑 Введите ваш пароль от KLAS (будет зашифрован)",
@@ -305,8 +296,8 @@ Tap a line to switch it.""",
             "invalid_credentials": "Данные не совпадают с данными Университета. Проверьте имя пользователя и пароль, затем попробуйте снова с /register 🔄",
             "library_login_failed": "Не удалось войти в библиотеку с указанными данными. Проверьте имя пользователя, пароль и номер телефона, затем попробуйте снова с /lregister 🔄",
             "library_login_phone_mismatch": "Библиотека принимает вход только с номера телефона, зарегистрированного в вашем библиотечном аккаунте. Проверьте номер телефона и попробуйте снова с /lregister 🔄",
-            "registration_successful": "🎉 Регистрация завершена! Теперь вы будете получать полезные уведомления. Изучите доступные функции с помощью /show или /info",
-            "library_registration_successful": "🎉 Доступ к библиотеке предоставлен! Теперь вы можете использовать замечательные библиотечные функции, такие как /qr",
+            "registration_successful": "🎉 Готово! Я уже вижу ваши задания в KLAS и буду напоминать о дедлайнах. Первое время может быть тихо - я разбираюсь, что у вас уже есть, это нормально.\n\nДалее: откройте /account, чтобы подключить и библиотеку - для QR-пропуска и поиска книг.",
+            "library_registration_successful": "🎉 Библиотека подключена! Получите QR-пропуск через /qr или ищите книги через /account → 🔍 Найти книгу.",
             "registration_failed": "Не удалось завершить регистрацию. Проверьте данные и попробуйте снова с /register 🔄",
             "failed_to_save_credentials": "Возникла небольшая проблема при сохранении данных. Пожалуйста, попробуйте позже.",
             "unregistered": "Вы успешно отменили регистрацию в боте. Вы всегда можете зарегистрироваться снова! 👋",
