@@ -279,3 +279,22 @@ async def test_discussions_show_up_and_filter_as_assignments():
     assert "💬 " in text
     assert "논문을 읽고 토론" in text
     assert "Week 3" not in text
+
+
+def test_a_whole_number_of_days_still_prints_its_zero_hours():
+    """"1d 0h 58m" must not collapse into "1d 58m" - read literally, that is a
+    deadline an hour earlier than KLAS actually gives."""
+    left = datetime.timedelta(days=1, minutes=58)
+
+    assert todos._format_time_left(left, Language.EN) == "1d 0h 58m"
+
+
+def test_shorter_spans_drop_the_units_above_them():
+    assert (
+        todos._format_time_left(
+            datetime.timedelta(hours=3, minutes=20), Language.EN
+        )
+        == "3h 20m"
+    )
+    assert todos._format_time_left(datetime.timedelta(minutes=45), Language.EN) == "45m"
+    assert todos._format_time_left(datetime.timedelta(seconds=-30), Language.EN) == "0m"

@@ -101,13 +101,15 @@ def _format_time_left(left_time, user_lang) -> str:
     hours, remainder = divmod(remainder, 3600)
     minutes = remainder // 60
 
+    # A zero unit is printed whenever a bigger one already is: dropping it
+    # turns "1d 0h 58m" into "1d 58m", which reads as an hour less than the
+    # deadline actually leaves.
     parts = []
     if days:
         parts.append(Strings.get("time_days", user_lang, count=days))
-    if hours:
+    if days or hours:
         parts.append(Strings.get("time_hours", user_lang, count=hours))
-    if minutes or not parts:
-        parts.append(Strings.get("time_minutes", user_lang, count=minutes))
+    parts.append(Strings.get("time_minutes", user_lang, count=minutes))
     return " ".join(parts)
 
 

@@ -97,19 +97,20 @@ def assignment_key(subject_name: str, assignment_type: str, title: str) -> str:
 
 
 def format_left_time(left_time) -> str:
-    """Human-readable remaining time, e.g. "3d 4h" or "45m"."""
+    """Human-readable remaining time, e.g. "3d 4h 5m" or "45m"."""
     total_seconds = int(left_time.total_seconds())
     days, remainder = divmod(max(total_seconds, 0), 86400)
     hours, remainder = divmod(remainder, 3600)
     minutes = remainder // 60
 
+    # Same rule as the /show formatter: a zero unit stays once a bigger one is
+    # shown, so "1d 0h 58m" never collapses into the hour-short "1d 58m".
     parts = []
     if days:
         parts.append(f"{days}d")
-    if hours:
+    if days or hours:
         parts.append(f"{hours}h")
-    if minutes or not parts:
-        parts.append(f"{minutes}m")
+    parts.append(f"{minutes}m")
     return " ".join(parts)
 
 

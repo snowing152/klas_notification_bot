@@ -485,3 +485,16 @@ async def test_a_discussion_is_announced_like_any_other_assignment(monkeypatch):
     text = bot.sent[0][1]
     assert "💬 English" in text
     assert f"{Strings.get('type_discussions', Language.EN)}: 논문을 읽고 토론" in text
+
+
+def test_format_left_time_keeps_a_zero_hour_under_a_day_count():
+    """Same rule as /show: dropping the 0h reads as an hour less than there is."""
+    assert (
+        notifications.format_left_time(datetime.timedelta(days=1, minutes=58))
+        == "1d 0h 58m"
+    )
+    assert (
+        notifications.format_left_time(datetime.timedelta(hours=3, minutes=20))
+        == "3h 20m"
+    )
+    assert notifications.format_left_time(datetime.timedelta(minutes=45)) == "45m"
