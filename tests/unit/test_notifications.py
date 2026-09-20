@@ -52,11 +52,26 @@ class FakeBot:
         self.sent.append((chat_id, text))
 
 
-def make_todo(title="Report 1", hours=48, subject="Algorithms", type_="homeworks"):
+def at_hour(hour):
+    """What FakeClock(hour) reads - the base a fixture's deadlines are set from."""
+    return datetime.datetime(2026, 9, 20, hour, 0)
+
+
+def make_todo(
+    title="Report 1", hours=48, subject="Algorithms", type_="homeworks", hour=12
+):
+    """`hours` from the clock the test runs at, as an absolute deadline."""
     return [
         {
             "name": subject,
-            "todo": {type_: [{"title": title, "left_time": datetime.timedelta(hours=hours)}]},
+            "todo": {
+                type_: [
+                    {
+                        "title": title,
+                        "expire_at": at_hour(hour) + datetime.timedelta(hours=hours),
+                    }
+                ]
+            },
         }
     ]
 
@@ -69,7 +84,7 @@ class FakeClock:
         self.hour = hour
 
     def now(self):
-        return datetime.datetime(2026, 9, 20, self.hour, 0)
+        return at_hour(self.hour)
 
 
 def _patch_user_deps(monkeypatch, api, bot=None, hour=12):
@@ -381,7 +396,7 @@ def _thresholds_recorded(sent: dict) -> set:
 async def test_quiet_hours_hold_the_day_ahead_reminder(monkeypatch):
     """KLAS deadlines are usually 23:59, so the 24h warning lands at night."""
     await _threshold_only_user()
-    api = FakeApi(login_result={"JSESSIONID": "x"}, todo_list=make_todo(hours=20))
+    api = FakeApi(login_result={"JSESSIONID": "x"}, todo_list=make_todo(hours=20, hour=2))
     bot = _patch_user_deps(monkeypatch, api, hour=2)
 
     await notifications._process_user(FakeUser("1"))
@@ -401,7 +416,7 @@ async def test_quiet_hours_let_the_last_hours_through(monkeypatch):
     await _threshold_only_user()
     bot = _patch_user_deps(
         monkeypatch,
-        FakeApi(login_result={"JSESSIONID": "x"}, todo_list=make_todo(hours=1.5)),
+        FakeApi(login_result={"JSESSIONID": "x"}, todo_list=make_todo(hours=1.5, hour=2)),
         hour=2,
     )
 
@@ -415,7 +430,7 @@ async def test_quiet_hours_can_be_switched_off(monkeypatch):
     await update_user_settings("1", quiet_hours=False)
     bot = _patch_user_deps(
         monkeypatch,
-        FakeApi(login_result={"JSESSIONID": "x"}, todo_list=make_todo(hours=20)),
+        FakeApi(login_result={"JSESSIONID": "x"}, todo_list=make_todo(hours=20, hour=2)),
         hour=2,
     )
 

@@ -9,6 +9,7 @@ from app.database.database import save_user
 from app.handlers import todos
 from app.handlers.todos import process_show_filter_callback, show_all_assignments
 from app.strings import Language, Strings
+from app.utils import timezone
 
 
 class FakeApi:
@@ -34,14 +35,30 @@ class FakeApi:
         return self._todo_list
 
 
-def make_subject(subject, items):
-    """items: list of (type, title, hours_left)."""
+def make_subject(subject, items, now=None):
+    """items: list of (type, title, hours_left).
+
+    KLAS data carries the deadline itself, so the hours are turned into one
+    here - against the same clock the handler will read unless a test freezes
+    its own.
+    """
+    moment = now or timezone.now()
     todo = {}
     for type_, title, hours in items:
         todo.setdefault(type_, []).append(
-            {"title": title, "left_time": datetime.timedelta(hours=hours)}
+            {"title": title, "expire_at": moment + datetime.timedelta(hours=hours)}
         )
     return {"name": subject, "todo": todo}
+
+
+class FakeClock:
+    """A `now()` the test moves by hand."""
+
+    def __init__(self, moment):
+        self.moment = moment
+
+    def now(self):
+        return self.moment
 
 
 def make_message(user_id="700", language_code="en"):
@@ -298,3 +315,55 @@ def test_shorter_spans_drop_the_units_above_them():
     )
     assert todos._format_time_left(datetime.timedelta(minutes=45), Language.EN) == "45m"
     assert todos._format_time_left(datetime.timedelta(seconds=-30), Language.EN) == "0m"
+
+
+@pytest.mark.asyncio
+async def test_a_cached_list_keeps_counting_down(monkeypatch):
+    """The cache holds deadlines, not a countdown frozen at fetch time: a
+    second /show inside the TTL must not repeat the minutes already gone."""
+    await _register("712")
+    clock = FakeClock(datetime.datetime(2026, 9, 20, 23, 1))
+    monkeypatch.setattr(todos, "timezone", clock)
+    todo_list = [
+        make_subject(
+            "컴퓨터그래픽스",
+            [("homeworks", "P02 Primitives and Keyboard", 25)],
+            now=datetime.datetime(2026, 9, 20, 22, 59),
+        )
+    ]
+    api = FakeApi(todo_list=todo_list)
+
+    with mock.patch.object(todos, "KwangwoonUniversityApi", lambda: api):
+        first = make_message(user_id="712")
+        await show_all_assignments(first)
+
+        clock.moment += datetime.timedelta(minutes=5)
+        second = make_message(user_id="712")
+        await show_all_assignments(second)
+
+    assert api.calls["todo"] == 1, "the second /show should come from the cache"
+    assert "1d 0h 58m" in first.answer.call_args[0][0]
+    assert "1d 0h 53m" in second.answer.call_args[0][0]
+
+
+@pytest.mark.asyncio
+async def test_a_deadline_that_passes_while_cached_drops_out_of_the_list():
+    await _register("713")
+    todo_list = [
+        make_subject(
+            "Algorithms", [("homeworks", "Due in a minute", 1 / 60), ("lectures", "Week 3", 10)]
+        )
+    ]
+    api = FakeApi(todo_list=todo_list)
+
+    with mock.patch.object(todos, "KwangwoonUniversityApi", lambda: api):
+        await show_all_assignments(make_message(user_id="713"))
+        later = make_message(user_id="713")
+        with mock.patch.object(
+            todos, "timezone", FakeClock(timezone.now() + datetime.timedelta(minutes=2))
+        ):
+            await show_all_assignments(later)
+
+    assert api.calls["todo"] == 1
+    assert "Due in a minute" not in later.answer.call_args[0][0]
+    assert "Week 3" in later.answer.call_args[0][0]

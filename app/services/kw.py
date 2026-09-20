@@ -329,7 +329,7 @@ class KwangwoonUniversityApi:
                         "title": lecture.get("sbjt"),
                         "progress": lecture.get("prog"),
                         "expire_date": lecture.get("endDate"),
-                        "left_time": self._get_left_time(
+                        "expire_at": self._get_expire_at(
                             lecture.get("endDate"), "%Y-%m-%d %H:%M"
                         ),
                     }
@@ -349,7 +349,7 @@ class KwangwoonUniversityApi:
                     {
                         "title": homework.get("title"),
                         "expire_date": homework.get("expiredate"),
-                        "left_time": self._get_left_time(
+                        "expire_at": self._get_expire_at(
                             homework.get("expiredate"), "%Y-%m-%d %H:%M:%S"
                         ),
                     }
@@ -369,7 +369,7 @@ class KwangwoonUniversityApi:
                     {
                         "title": team_project.get("title"),
                         "expire_date": team_project.get("expiredate"),
-                        "left_time": self._get_left_time(
+                        "expire_at": self._get_expire_at(
                             team_project.get("expiredate"),
                             "%Y-%m-%dT%H:%M:%S.%f%z",
                             True,
@@ -391,7 +391,7 @@ class KwangwoonUniversityApi:
                     {
                         "title": quiz.get("papernm"),
                         "expire_date": quiz.get("edt"),
-                        "left_time": self._get_left_time(
+                        "expire_at": self._get_expire_at(
                             quiz.get("edt"), "%Y-%m-%d %H:%M"
                         ),
                     }
@@ -477,19 +477,26 @@ class KwangwoonUniversityApi:
                 {
                     "title": (discussion.get("title") or "").strip(),
                     "expire_date": f"{ended[:4]}-{ended[4:6]}-{ended[6:]} 23:59",
-                    "left_time": self._get_left_time(
+                    "expire_at": self._get_expire_at(
                         f"{ended}2359", "%Y%m%d%H%M"
                     ),
                 }
             )
         return not_done_discussions
 
-    def _get_left_time(self, expire_date, date_format, remove_timezone=False):
+    def _get_expire_at(self, expire_date, date_format, remove_timezone=False):
+        """The deadline itself, as naive Korean local time.
+
+        Deliberately not "how long is left": a countdown is only true at the
+        moment it is computed, and this list is built over tens of seconds and
+        then cached for minutes. Callers subtract it from a single `now()` of
+        their own when they render, so every line of one message is measured
+        from the same instant and a cached list never goes stale.
+        """
         expire_date_time = datetime.datetime.strptime(expire_date, date_format)
         if remove_timezone:
             expire_date_time = expire_date_time.replace(tzinfo=None)
-        now_time = timezone.now()
-        return expire_date_time - now_time
+        return expire_date_time
 
     async def get_todo_list(self) -> Optional[List[Dict]]:
         if not self._cookies_is_valid():
