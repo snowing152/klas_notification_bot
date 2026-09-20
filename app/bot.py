@@ -15,6 +15,7 @@ dp.message.middleware(AntiSpamMiddleware(limit=2))
 
 def setup_handlers(dp: Dispatcher):
     from app.handlers import (
+        account,
         auth,
         food,
         common,
@@ -26,13 +27,17 @@ def setup_handlers(dp: Dispatcher):
         settings as settings_handlers,
     )
 
-    # Register all handlers
+    # Register all handlers.
+    # Ahead of every command: it clears an abandoned "which book?" prompt and
+    # then skips, so the command the user typed instead still runs.
+    library.register_search_escape(dp)
     auth.register_handlers(dp)
     todos.register_handlers(dp)
     food.register_handlers(dp)
     student_info.register_handlers(dp)
     # Before callbacks: its handler answers every callback query it is offered
     settings_handlers.register_handlers(dp)
+    account.register_handlers(dp)
     callbacks.register_handlers(dp)
     admin.register_handlers(dp)
     news.register_handlers(dp)

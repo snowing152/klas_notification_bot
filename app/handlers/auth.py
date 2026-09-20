@@ -23,6 +23,7 @@ from app.database.database import (
 from app.strings import Strings
 from app.utils.language_utils import get_user_language_with_fallback
 from app.handlers.student_info import student_photo_path
+from app.handlers.todos import forget_cached_items
 
 
 # Define states for registration
@@ -101,18 +102,25 @@ async def process_password(message: types.Message, state: FSMContext):
         await message.answer(Strings.get("unexpected_error", user_lang))
 
 
+async def delete_all_user_data(user_id: str) -> None:
+    """"Delete my data" means all of it: the library row holds a second
+    password and the phone number, the cached ID photo is a face, and the
+    in-memory assignment cache is read before the database.
+    Shared by /unregister and the /account screen's delete-confirm button."""
+    await delete_user(user_id)
+    await delete_library_user(user_id)
+    await delete_notification_data(user_id)
+    await delete_user_settings(user_id)
+    student_photo_path(user_id).unlink(missing_ok=True)
+    forget_cached_items(user_id)
+
+
 async def cmd_unregister(message: types.Message):
     try:
         user_lang = await get_user_language_with_fallback(message)
 
         user_id = str(message.from_user.id)
-        # "Delete my data" means all of it: the library row holds a second
-        # password and the phone number, and the cached ID photo is a face.
-        await delete_user(user_id)
-        await delete_library_user(user_id)
-        await delete_notification_data(user_id)
-        await delete_user_settings(user_id)
-        student_photo_path(user_id).unlink(missing_ok=True)
+        await delete_all_user_data(user_id)
         await message.answer(Strings.get("unregistered", user_lang))
         logging.info(f"User {message.from_user.id} unregistered")
         await message.delete()

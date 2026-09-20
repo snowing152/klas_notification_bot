@@ -3,16 +3,27 @@ import logging
 import asyncio
 import tempfile
 
-from aiogram import Dispatcher, types
+from aiogram import Dispatcher, F, types
+from aiogram.dispatcher.event.bases import SkipHandler
 from aiogram.filters import Command, CommandObject
+from aiogram.fsm.context import FSMContext
+from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import FSInputFile
 
 from app.services.qr import get_qr
 from app.strings import Strings
 from app.database.database import get_library_user
+from app.keyboards import create_login_library_keyboard, quick_access_labels
 from app.utils.encryption import decrypt_password
 from app.services.library import search_book
 from app.utils.language_utils import get_user_language_with_fallback
+
+
+class SearchStates(StatesGroup):
+    """/account's "Find a book" button asks for a title with no /search
+    argument to parse, so it needs its own state instead of CommandObject."""
+
+    waiting_for_query = State()
 
 
 async def cmd_qr(message: types.Message):
@@ -20,7 +31,10 @@ async def cmd_qr(message: types.Message):
         user_lang = await get_user_language_with_fallback(message)
         user = await get_library_user(str(message.from_user.id))
         if not user:
-            await message.answer(Strings.get("library_user_not_found", user_lang))
+            await message.answer(
+                Strings.get("library_user_not_found", user_lang),
+                reply_markup=create_login_library_keyboard(user_lang),
+            )
             return
 
         os.makedirs("images", exist_ok=True)
@@ -57,6 +71,27 @@ async def cmd_qr(message: types.Message):
         await message.answer(Strings.get("unexpected_error", user_lang))
 
 
+async def send_book_search_results(message: types.Message, user_lang, query: str) -> None:
+    list_of_books = await search_book(query)
+
+    if not list_of_books:
+        await message.answer(Strings.get("no_books_found", user_lang))
+        return
+    for book in list_of_books:
+        message_text = f"📚 {book[0]}\n\n"
+        for info in book[2]:
+            message_text += f"📍 {info['location']}\n📦 {info['book_shell_number']}\n"
+            if info["status"]:
+                message_text += f"🔄 {info['status']} {info['return_date']}\n"
+            else:
+                message_text += "🔄 Available\n"
+            message_text += "\n"
+        if book[1]:
+            await message.answer_photo(book[1], caption=message_text)
+        else:
+            await message.answer(message_text)
+
+
 async def cmd_find_book(message: types.Message, command: CommandObject):
     try:
         user_lang = await get_user_language_with_fallback(message)
@@ -67,32 +102,53 @@ async def cmd_find_book(message: types.Message, command: CommandObject):
             await message.answer(Strings.get("please_enter_book_name", user_lang))
             return
 
-        list_of_books = await search_book(query)
-
-        if not list_of_books:
-            await message.answer(Strings.get("no_books_found", user_lang))
-            return
-        for book in list_of_books:
-            message_text = f"📚 {book[0]}\n\n"
-            for info in book[2]:
-                message_text += (
-                    f"📍 {info['location']}\n📦 {info['book_shell_number']}\n"
-                )
-                if info["status"]:
-                    message_text += f"🔄 {info['status']} {info['return_date']}\n"
-                else:
-                    message_text += "🔄 Available\n"
-                message_text += "\n"
-            if book[1]:
-                await message.answer_photo(book[1], caption=message_text)
-            else:
-                await message.answer(message_text)
-
+        await send_book_search_results(message, user_lang, query)
     except Exception as e:
         logging.error(f"Error in cmd_find_book: {e}")
         await message.answer(Strings.get("unexpected_error", user_lang))
 
 
+async def cancel_search_on_command(message: types.Message, state: FSMContext):
+    """A command typed at the "which book?" prompt means the user moved on.
+
+    Without this the state outlives the prompt: the command runs (commands are
+    registered ahead of this state), the state is never cleared, and the user's
+    next ordinary message gets read as a book title. Clears it and skips, so
+    the command they actually typed still runs.
+    """
+    await state.clear()
+    raise SkipHandler
+
+
+async def process_search_query(message: types.Message, state: FSMContext):
+    try:
+        user_lang = await get_user_language_with_fallback(message)
+        await send_book_search_results(message, user_lang, message.text)
+    except Exception as e:
+        logging.error(f"Error in process_search_query: {e}")
+        await message.answer(Strings.get("unexpected_error", user_lang))
+    finally:
+        await state.clear()
+
+
+def register_search_escape(dp: Dispatcher):
+    """Registered ahead of every command handler (see app/bot.py) - after them
+    it would never be offered a command, which is the only thing it exists to
+    catch."""
+    dp.message.register(
+        cancel_search_on_command,
+        SearchStates.waiting_for_query,
+        F.text.startswith("/"),
+    )
+
+
 def register_handlers(dp: Dispatcher):
     dp.message.register(cmd_qr, Command("qr"))
+    dp.message.register(
+        cmd_qr,
+        # "🔍 QR" is what this button said before it was localized (and
+        # before its emoji changed to 📱) - still cached on some clients.
+        F.text.in_(quick_access_labels("button_qr", "🔍 QR")),
+    )
     dp.message.register(cmd_find_book, Command("search"))
+    dp.message.register(process_search_query, SearchStates.waiting_for_query)

@@ -62,10 +62,24 @@ quiet hours are read through `timezone.now()`, so they are Korean local hours.
 because `common.other_message` is a catch-all `dp.message.register` with no filter — it
 swallows anything reaching it and routes free text to the LLM. Anything registered after
 it would never fire. `callbacks.process_callback_query` is likewise unfiltered for callback queries, so
-`settings` is registered before it - anything registered after would never see a tap.
+every module owning its own callbacks — `settings`, `account`, and `todos`' `show_*`
+filter buttons — is registered before it; anything registered after would never see a tap.
 Registration and library-registration flows are aiogram FSM states
 (`app/handlers/auth.py`) with `MemoryStorage`, so an in-progress registration is lost on
-restart.
+restart. `auth` is registered *first*, so its states swallow even commands: a user at the
+"enter your student ID" prompt who types `/show` registers `/show` as their ID. The book
+search state (`library.SearchStates`) sits after the commands instead, so
+`library.register_search_escape` is registered ahead of everything to clear an abandoned
+prompt and `SkipHandler` on to the command the user actually typed.
+
+**Two entry points per action.** Anything reachable from a button is also reachable by
+command, and the handler for it takes no `Message` it can reply to — `/info`'s body lives
+in `student_info.send_student_info(bot, chat_id, ...)` because the `/account` button that
+calls it has only the bot's own message in hand. Quick-access reply-keyboard buttons are
+matched with `F.text.in_(quick_access_labels(key, *legacy))`, which spans **all three
+languages plus superseded label text**: the keyboard is client-side and only refreshes on
+the next message carrying `reply_markup`, so after a language switch or a deploy that
+renames a button, taps arrive with the old text and must still route.
 
 **Localization.** `app/strings.py` holds every user-facing string in one nested dict
 keyed by the `Language` enum (EN/KO/RU). `Strings.get()` never raises: it falls back
@@ -104,7 +118,11 @@ volume, and silently writing to ephemeral storage loses every user on the next d
 **Sessions.** `app/services/kw.py` (`KwangwoonUniversityApi`) is an async context manager
 — always use `async with`, one instance per operation. `app/services/qr.py` instead keeps
 a module-level shared `aiohttp` session that `main.py` closes in its `finally`.
-`app/services/news.py` and `food.py` hold module-level caches (news TTL: 1 hour).
+`app/services/news.py` and `food.py` hold module-level caches (news TTL: 1 hour), as does
+`app/handlers/todos.py` (`_items_cache`, 5 min): `/show`'s filter buttons re-render from it
+rather than repeating `get_todo_list()`, which is a login plus four requests per subject.
+It is read *before* the database, so `auth.delete_all_user_data` must drop the user's entry
+(`todos.forget_cached_items`) or a deleted account keeps being served from memory.
 
 ## Testing conventions
 

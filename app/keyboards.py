@@ -5,12 +5,15 @@ from app.strings import Strings, Language
 
 
 def create_quick_access_keyboard(user_lang: Language):
+    # Only the two things worth a permanent, always-on-screen button: /menu
+    # and /news are reachable from the command menu instead, since they're
+    # opened far less often than assignments or the library QR pass.
     keyboard = ReplyKeyboardMarkup(
         keyboard=[
             [
-                KeyboardButton(text="📋 Todos"),
-                KeyboardButton(text="🔍 QR"),
-            ]
+                KeyboardButton(text=Strings.get("button_todos", user_lang)),
+                KeyboardButton(text=Strings.get("button_qr", user_lang)),
+            ],
         ],
         resize_keyboard=True,
         is_persistent=True,
@@ -18,6 +21,20 @@ def create_quick_access_keyboard(user_lang: Language):
         input_field_placeholder=Strings.get("input_field_placeholder", user_lang)
     )
     return keyboard
+
+
+def quick_access_labels(key: str, *legacy: str) -> frozenset:
+    """Every language's label for a quick-access button, e.g. for a message
+    filter. The reply keyboard is client-side and only refreshes on the next
+    message carrying reply_markup, so a user who just switched language may
+    still be looking at labels in the old one - matching against all three
+    survives that instead of routing the tap to the LLM.
+
+    `legacy` adds pre-localization button text that may still be cached on a
+    client from before this button's label changed - same reasoning, just
+    across a deploy instead of a language switch.
+    """
+    return frozenset(Strings.get(key, lang) for lang in Language) | set(legacy)
 
 
 def create_language_keyboard():
@@ -82,6 +99,30 @@ def create_donation_keyboard(user_lang: Language):
     return builder.as_markup()
 
 
+def create_show_filter_keyboard(user_lang: Language, current: str):
+    """Offers the views other than the one already on screen - only called
+    once the caller has confirmed both lectures and assignments exist, since
+    filtering into an empty category is never useful."""
+    builder = InlineKeyboardBuilder()
+    if current != "all":
+        builder.button(
+            text=Strings.get("show_filter_all", user_lang), callback_data="show_all"
+        )
+    if current != "lectures":
+        builder.button(
+            text=Strings.get("show_filter_lectures", user_lang),
+            callback_data="show_lectures",
+        )
+    if current != "assignments":
+        builder.button(
+            text=Strings.get("show_filter_assignments", user_lang),
+            callback_data="show_assignments",
+        )
+    builder.adjust(1)
+
+    return builder.as_markup()
+
+
 def create_settings_keyboard(user_lang: Language, settings_row):
     """One row per preference; the label carries its current state."""
 
@@ -128,6 +169,81 @@ def create_settings_keyboard(user_lang: Language, settings_row):
         callback_data="settings_language",
     )
     builder.adjust(1)
+
+    return builder.as_markup()
+
+
+def create_account_keyboard(user_lang: Language, has_klas: bool, has_library: bool):
+    """One row per action; login rows reword to "log in again" once connected,
+    and info/search/delete only appear once there's something to act on."""
+    builder = InlineKeyboardBuilder()
+    builder.button(
+        text=Strings.get(
+            "account_relogin_klas" if has_klas else "account_login_klas", user_lang
+        ),
+        callback_data="account_klas",
+    )
+    builder.button(
+        text=Strings.get(
+            "account_relogin_library" if has_library else "account_login_library",
+            user_lang,
+        ),
+        callback_data="account_library",
+    )
+    if has_klas:
+        builder.button(
+            text=Strings.get("account_student_info", user_lang),
+            callback_data="account_info",
+        )
+    if has_library:
+        builder.button(
+            text=Strings.get("account_search_book", user_lang),
+            callback_data="account_search",
+        )
+    if has_klas or has_library:
+        builder.button(
+            text=Strings.get("account_delete", user_lang),
+            callback_data="account_delete",
+        )
+    builder.adjust(1)
+
+    return builder.as_markup()
+
+
+def create_login_klas_keyboard(user_lang: Language):
+    """One button leading straight into the registration FSM, for dead ends
+    that used to just tell the user to type /register themselves."""
+    builder = InlineKeyboardBuilder()
+    builder.button(
+        text=Strings.get("account_login_klas", user_lang), callback_data="account_klas"
+    )
+    builder.adjust(1)
+
+    return builder.as_markup()
+
+
+def create_login_library_keyboard(user_lang: Language):
+    builder = InlineKeyboardBuilder()
+    builder.button(
+        text=Strings.get("account_login_library", user_lang),
+        callback_data="account_library",
+    )
+    builder.adjust(1)
+
+    return builder.as_markup()
+
+
+def create_account_delete_confirm_keyboard(user_lang: Language):
+    builder = InlineKeyboardBuilder()
+    builder.button(
+        text=Strings.get("account_delete_yes", user_lang),
+        callback_data="account_delete_yes",
+    )
+    builder.button(
+        text=Strings.get("account_delete_no", user_lang),
+        callback_data="account_delete_no",
+    )
+    builder.adjust(2)
 
     return builder.as_markup()
 
