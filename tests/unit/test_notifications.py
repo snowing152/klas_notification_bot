@@ -9,6 +9,7 @@ from app.database.database import (
     update_user_settings,
 )
 from app.services import notifications
+from app.strings import Language, Strings
 
 
 class FakeUser:
@@ -466,3 +467,21 @@ async def test_new_assignment_alerts_off_still_records_the_assignment(monkeypatc
     await update_user_settings("1", new_assignment_alerts=True)
     await notifications._process_user(FakeUser("1"))
     assert bot.sent == [], "old work was announced as new after switching on"
+
+
+async def test_a_discussion_is_announced_like_any_other_assignment(monkeypatch):
+    """TYPE_EMOJIS is what decides which categories get notified at all, so a
+    type missing from it would be collected by /show and never reminded about."""
+    api = FakeApi(login_result={"JSESSIONID": "x"}, todo_list=make_todo(hours=100))
+    bot = _patch_user_deps(monkeypatch, api)
+    await notifications._process_user(FakeUser("1"))  # seeding cycle
+
+    api._todo_list = make_todo(
+        title="논문을 읽고 토론", hours=30, subject="English", type_="discussions"
+    )
+    await notifications._process_user(FakeUser("1"))
+
+    assert len(bot.sent) == 1
+    text = bot.sent[0][1]
+    assert "💬 English" in text
+    assert f"{Strings.get('type_discussions', Language.EN)}: 논문을 읽고 토론" in text

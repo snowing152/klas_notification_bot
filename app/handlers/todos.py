@@ -19,15 +19,16 @@ from app.utils.language_utils import get_user_language_with_fallback
 # Assignment types the "Only assignments" filter covers - everything that
 # isn't a lecture to watch. Kept separate from "lectures" because that's the
 # distinction students actually care about: watch vs. produce and submit.
-ASSIGNMENT_TYPES = {"homeworks", "quizzes", "team_projects"}
+ASSIGNMENT_TYPES = {"homeworks", "quizzes", "team_projects", "discussions"}
 TYPE_EMOJIS = {
     "lectures": "📚",
     "homeworks": "📝",
     "quizzes": "🧠",
     "team_projects": "👥",
+    "discussions": "💬",
 }
 
-# get_todo_list() logs in and issues a gather() of 4 requests per subject, so
+# get_todo_list() logs in and issues a gather() of 5 requests per subject, so
 # a filter tap re-running it would feel like a hang. Cache the flattened,
 # already-sorted list per user for a few minutes instead.
 CACHE_TTL_SECONDS = 300
