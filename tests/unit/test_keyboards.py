@@ -17,6 +17,16 @@ def test_quick_access_labels_cover_every_language():
     )
 
 
+def test_quick_access_labels_include_legacy_aliases():
+    """Old cached button text from before a label was localized/changed must
+    still route correctly, or every existing user gets one misfired tap on
+    the deploy that changes it."""
+    labels = quick_access_labels("button_qr", "🔍 QR")
+
+    assert "🔍 QR" in labels
+    assert labels == {Strings.get("button_qr", lang) for lang in Language} | {"🔍 QR"}
+
+
 def test_quick_access_keyboard_uses_localized_labels():
     markup = create_quick_access_keyboard(Language.KO)
     labels = [button.text for row in markup.keyboard for button in row]

@@ -23,14 +23,18 @@ def create_quick_access_keyboard(user_lang: Language):
     return keyboard
 
 
-def quick_access_labels(key: str) -> frozenset:
+def quick_access_labels(key: str, *legacy: str) -> frozenset:
     """Every language's label for a quick-access button, e.g. for a message
     filter. The reply keyboard is client-side and only refreshes on the next
     message carrying reply_markup, so a user who just switched language may
     still be looking at labels in the old one - matching against all three
     survives that instead of routing the tap to the LLM.
+
+    `legacy` adds pre-localization button text that may still be cached on a
+    client from before this button's label changed - same reasoning, just
+    across a deploy instead of a language switch.
     """
-    return frozenset(Strings.get(key, lang) for lang in Language)
+    return frozenset(Strings.get(key, lang) for lang in Language) | set(legacy)
 
 
 def create_language_keyboard():

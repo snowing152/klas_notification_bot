@@ -211,7 +211,10 @@ async def process_show_filter_callback(callback_query: types.CallbackQuery):
 def register_handlers(dp: Dispatcher):
     dp.message.register(show_all_assignments, Command("show"))
     dp.message.register(
-        show_all_assignments, F.text.in_(quick_access_labels("button_todos"))
+        show_all_assignments,
+        # "📋 Todos" is what this button said before it was localized - still
+        # cached on some clients until they get a fresh keyboard.
+        F.text.in_(quick_access_labels("button_todos", "📋 Todos")),
     )
     dp.callback_query.register(
         process_show_filter_callback,

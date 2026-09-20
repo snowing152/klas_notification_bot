@@ -120,6 +120,11 @@ async def process_search_query(message: types.Message, state: FSMContext):
 
 def register_handlers(dp: Dispatcher):
     dp.message.register(cmd_qr, Command("qr"))
-    dp.message.register(cmd_qr, F.text.in_(quick_access_labels("button_qr")))
+    dp.message.register(
+        cmd_qr,
+        # "🔍 QR" is what this button said before it was localized (and
+        # before its emoji changed to 📱) - still cached on some clients.
+        F.text.in_(quick_access_labels("button_qr", "🔍 QR")),
+    )
     dp.message.register(cmd_find_book, Command("search"))
     dp.message.register(process_search_query, SearchStates.waiting_for_query)
