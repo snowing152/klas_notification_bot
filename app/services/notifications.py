@@ -36,6 +36,7 @@ TYPE_EMOJIS = {
     "homeworks": "📝",
     "quizzes": "🧠",
     "team_projects": "🚧",
+    "discussions": "💬",
 }
 
 # How many users a cycle reads from KLAS at once. Deliberately small: KLAS

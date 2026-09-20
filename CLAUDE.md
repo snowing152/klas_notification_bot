@@ -46,6 +46,20 @@ with their decrypted password and emits at most one message per assignment per h
 threshold (24/12/6/3/2/1), plus one when an assignment first appears. What has already
 been sent lives in SQLite - see below.
 
+**Assignment categories.** `get_todo_list()` reads five per subject — lectures,
+homeworks, team projects, quizzes and 토론 (`discussions`) — and a category only reaches
+the user if it appears in *both* `TYPE_EMOJIS` dicts: `app/handlers/todos.py`'s drives
+`/show`, `app/services/notifications.py`'s decides what `_collect_messages` even looks at,
+and `ASSIGNMENT_TYPES` in the handler decides which side of the lectures/assignments
+filter it falls on. Each also needs a `type_<name>` string in all three languages.
+`discussions` is the odd one: `DscsnStdList.do` carries no "submitted" flag (its
+`toroncnt` is how many posts the whole class wrote), so participation costs a second
+request, `DscsnOpinionList.do`, per discussion whose date window is open — matched
+against `KwangwoonUniversityApi.login_id`, since KLAS stamps each post with a `userId` of
+`<student number>UA` and the login id *is* the student number. Never match on a post's
+`title` instead: students type that by hand and write number and name in either order.
+KLAS gives the window as bare dates, so the deadline is the end day's 23:59.
+
 **Notification state is in SQLite, not in memory.** `sent_notifications` holds one row
 per (user, assignment, kind) already delivered - `new` for the announcement when the
 assignment appeared, `t<hours>` for each deadline threshold - so a restart cannot repeat
@@ -120,7 +134,7 @@ volume, and silently writing to ephemeral storage loses every user on the next d
 a module-level shared `aiohttp` session that `main.py` closes in its `finally`.
 `app/services/news.py` and `food.py` hold module-level caches (news TTL: 1 hour), as does
 `app/handlers/todos.py` (`_items_cache`, 5 min): `/show`'s filter buttons re-render from it
-rather than repeating `get_todo_list()`, which is a login plus four requests per subject.
+rather than repeating `get_todo_list()`, which is a login plus five requests per subject.
 It is read *before* the database, so `auth.delete_all_user_data` must drop the user's entry
 (`todos.forget_cached_items`) or a deleted account keeps being served from memory.
 

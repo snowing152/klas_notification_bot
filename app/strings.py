@@ -1,6 +1,5 @@
 import logging
 from enum import Enum
-from typing import Dict
 
 
 class Language(Enum):
@@ -10,7 +9,7 @@ class Language(Enum):
 
 
 class Strings:
-    _strings: Dict[Language, Dict[str, str]] = {
+    _strings: dict[Language, dict[str, str]] = {
         Language.EN: {
             "test_string": "Welcome, Test User!",
             "nonexistent_key": "Nonexistent key",
@@ -81,7 +80,7 @@ Year: {grade} | Semester: {semester}
 🍳 <Breakfast Special - 1000 KRW>
 Available 8:30AM - 9:30AM at 복지관 2nd floor
 
-🍔 <Lunch Options - 6000 KRW> 
+🍔 <Lunch Options - 6000 KRW>
 Available 11:30AM - 2:00PM at 복지관 2nd floor
 
 🍴 <Food Court Variety - 8000 KRW>
@@ -125,6 +124,7 @@ Tap a line to switch it.""",
             "type_homeworks": "Assignment",
             "type_quizzes": "Quiz",
             "type_team_projects": "Team project",
+            "type_discussions": "Discussion",
             "account_header": "👤 Your account",
             "account_klas_connected": "✅ KLAS: {username}",
             "account_klas_missing": "◻️ KLAS: not connected - connect it to see assignments, get deadline reminders, and check your student info",
@@ -142,9 +142,6 @@ Tap a line to switch it.""",
             "account_delete_no": "↩️ Cancel",
             "enter_book_name": "🔍 What book are you looking for?",
         },
-
-
-        
         Language.KO: {
             "test_string": "환영합니다!",
             "welcome": """안녕하세요, {name}님! 👋
@@ -214,7 +211,7 @@ KLAS 과제를 추적하고 마감일 전에 알려드려요 🧭
 🍳 <아침 특가 - 1000원>
 복지관 2층에서 오전 8:30 - 9:30에 이용 가능
 
-🍔 <점심 옵션 - 6000원> 
+🍔 <점심 옵션 - 6000원>
 복지관 2층에서 오전 11:30 - 오후 2:00에 이용 가능
 
 🍴 <푸드코트 다양한 메뉴 - 8000원>
@@ -257,6 +254,7 @@ KLAS 과제를 추적하고 마감일 전에 알려드려요 🧭
             "type_homeworks": "과제",
             "type_quizzes": "퀴즈",
             "type_team_projects": "팀 프로젝트",
+            "type_discussions": "토론",
             "account_header": "👤 내 계정",
             "account_klas_connected": "✅ KLAS: {username}",
             "account_klas_missing": "◻️ KLAS: 연결 안 됨 - 연결하면 과제 확인, 마감 알림, 학생 정보 조회를 사용할 수 있어요",
@@ -344,7 +342,7 @@ KLAS 과제를 추적하고 마감일 전에 알려드려요 🧭
 🍳 <Завтрак - 1000 вон>
 Доступно на 2-м этаже 복지관 с 8:30 до 9:30 утра
 
-🍔 <Обед - 6000 вон> 
+🍔 <Обед - 6000 вон>
 Доступно на 2-м этаже 복지관 с 11:30 до 14:00
 
 🍴 <Обед (фудкорт) - 8000 вон>
@@ -385,8 +383,9 @@ KLAS 과제를 추적하고 마감일 전에 알려드려요 🧭
             "credentials_expired": "🔐 Больше не получается войти в KLAS с сохранённым паролем. Если вы его меняли (KW требует это раз в несколько месяцев), сохраните новый через /register - до этого уведомления о дедлайнах приостановлены.",
             "type_lectures": "Лекция",
             "type_homeworks": "Задание",
-            "type_quizzes": "Тест",
+            "type_quizzes": "Квиз",
             "type_team_projects": "Групповой проект",
+            "type_discussions": "Дискуссия",
             "account_header": "👤 Ваш аккаунт",
             "account_klas_connected": "✅ KLAS: {username}",
             "account_klas_missing": "◻️ KLAS: не подключён - подключите, чтобы видеть задания, получать напоминания о дедлайнах и проверять данные студента",

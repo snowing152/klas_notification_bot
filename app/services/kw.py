@@ -36,6 +36,9 @@ class KwangwoonUniversityApi:
         }
         self.cookies: dict = {}
         self.session: Optional[aiohttp.ClientSession] = None
+        # The KLAS login id, which is the student number. Remembered because
+        # discussion posts are stamped with it - see _has_own_opinion.
+        self.login_id: Optional[str] = None
 
     async def __aenter__(self):
         self.session = aiohttp.ClientSession(
@@ -127,6 +130,8 @@ class KwangwoonUniversityApi:
         login_form_url = "https://klas.kw.ac.kr/usr/cmn/login/LoginForm.do"
         public_key_url = "https://klas.kw.ac.kr/usr/cmn/login/LoginSecurity.do"
         login_url = "https://klas.kw.ac.kr/usr/cmn/login/LoginConfirm.do"
+
+        self.login_id = login_id
 
         async def redirected_away_from_login_form(response) -> bool:
             # KLAS bounces us off the login form when the cookies we already
@@ -287,6 +292,28 @@ class KwangwoonUniversityApi:
         quizzes_url = "https://klas.kw.ac.kr/std/lis/evltn/AnytmQuizStdList.do"
         return await self._make_lecture_request(quizzes_url, subject_id, year)
 
+    async def _get_discussions(self, subject_id: str, year: str) -> Optional[Dict]:
+        discussions_url = "https://klas.kw.ac.kr/std/lis/evltn/DscsnStdList.do"
+        return await self._make_lecture_request(discussions_url, subject_id, year)
+
+    async def _get_discussion_opinions(
+        self, subject_id: str, year: str, tpcode
+    ) -> Optional[Dict]:
+        """Every post inside one 토론, which is how participation is read."""
+        if not self._cookies_is_valid():
+            return None
+
+        opinions_url = "https://klas.kw.ac.kr/std/lis/evltn/DscsnOpinionList.do"
+        return await self._post_json(
+            opinions_url,
+            {
+                "selectSubj": subject_id,
+                "selectYearhakgi": year,
+                "selectChangeYn": "Y",
+                "tpcode": str(tpcode),
+            },
+        )
+
     def _get_not_done_lectures_info(self, lectures: list[dict]) -> list[dict]:
         not_done_lectures = []
         today_date = timezone.now().strftime("%Y-%m-%d %H:%M")
@@ -371,6 +398,92 @@ class KwangwoonUniversityApi:
                 )
         return not_done_quizzes
 
+    @staticmethod
+    def _post_author_number(opinion: dict) -> str:
+        """The student number one 토론 post is stamped with.
+
+        KLAS writes userId as the number followed by an account-type code -
+        "2024322505UA" - so the digits are taken on their own and compared
+        whole. A startswith() against the raw userId would also accept a
+        longer number that merely begins the same way.
+        """
+        user_id = str(opinion.get("userId", ""))
+        for index, char in enumerate(user_id):
+            if not char.isdigit():
+                return user_id[:index]
+        return user_id
+
+    def _has_own_opinion(self, opinions: list[dict]) -> bool:
+        """Has the logged-in student already posted in this 토론?
+
+        The student number is the KLAS login id. Each post also carries a
+        `title` that students fill in with their number and name, but they type
+        it by hand and write the halves in either order, so userId is the only
+        field worth matching on.
+
+        Without a login id - the login_with_cookies path never sees one - this
+        says False, so the 토론 is reported as outstanding rather than lost.
+        """
+        if not self.login_id:
+            return False
+        return any(
+            self._post_author_number(opinion) == self.login_id
+            for opinion in opinions
+        )
+
+    async def _get_not_done_discussions_info(
+        self, discussions: list[dict], subject_id: str, year: str
+    ) -> list[dict]:
+        """The 토론 that are open right now and still missing this student.
+
+        Unlike every other category, the list endpoint carries no "submitted"
+        flag - its only count, toroncnt, is how many posts the whole class
+        wrote (KLAS labels the column 토론건수). Participation therefore costs
+        one more request per discussion, so only the ones inside their date
+        window are looked up: usually none or one per subject.
+        """
+        today_date = timezone.now().strftime("%Y%m%d")
+        open_discussions = [
+            discussion
+            for discussion in discussions
+            if discussion.get("started")
+            and discussion.get("ended")
+            and discussion["started"] <= today_date <= discussion["ended"]
+        ]
+        if not open_discussions:
+            return []
+
+        opinions = await asyncio.gather(
+            *(
+                self._get_discussion_opinions(
+                    subject_id, year, discussion.get("tpcode")
+                )
+                for discussion in open_discussions
+            )
+        )
+
+        not_done_discussions = []
+        for discussion, posts in zip(open_discussions, opinions):
+            # A request that failed (None) leaves the 토론 in the list: a
+            # reminder for work already done beats silence about work that
+            # isn't. Same reasoning if a big class ever paginates the posts.
+            if posts and self._has_own_opinion(posts):
+                continue
+
+            # KLAS gives the end as a bare date, so the deadline is its last
+            # minute.
+            ended = discussion["ended"]
+            not_done_discussions.append(
+                {
+                    "title": (discussion.get("title") or "").strip(),
+                    "expire_date": f"{ended[:4]}-{ended[4:6]}-{ended[6:]} 23:59",
+                    "left_time": self._get_left_time(
+                        f"{ended}2359", "%Y%m%d%H%M"
+                    ),
+                }
+            )
+        return not_done_discussions
+
     def _get_left_time(self, expire_date, date_format, remove_timezone=False):
         expire_date_time = datetime.datetime.strptime(expire_date, date_format)
         if remove_timezone:
@@ -399,14 +512,21 @@ class KwangwoonUniversityApi:
                 year = subject_semester
                 subject_id = todo.get("id")
 
-                lectures, homeworks, team_projects, quizzes = await asyncio.gather(
+                (
+                    lectures,
+                    homeworks,
+                    team_projects,
+                    quizzes,
+                    discussions,
+                ) = await asyncio.gather(
                     self._get_lectures(subject_id, year),
                     self._get_homeworks(subject_id, year),
                     self._get_team_projects(subject_id, year),
                     self._get_quizzes(subject_id, year),
+                    self._get_discussions(subject_id, year),
                 )
 
-                if None in (lectures, homeworks, team_projects, quizzes):
+                if None in (lectures, homeworks, team_projects, quizzes, discussions):
                     # One rejected request should cost this subject's missing
                     # category, not the whole user's todo list.
                     logging.warning(
@@ -420,6 +540,9 @@ class KwangwoonUniversityApi:
                         team_projects or []
                     ),
                     "quizzes": self._get_not_done_quizzes_info(quizzes or []),
+                    "discussions": await self._get_not_done_discussions_info(
+                        discussions or [], subject_id, year
+                    ),
                 }
 
             return todo_list

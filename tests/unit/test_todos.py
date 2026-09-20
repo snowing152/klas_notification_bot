@@ -255,3 +255,27 @@ async def test_filter_callback_serves_from_cache_and_narrows_the_view():
     markup = callback.message.edit_text.call_args.kwargs["reply_markup"]
     callbacks = [b.callback_data for row in markup.inline_keyboard for b in row]
     assert callbacks == ["show_all", "show_assignments"]
+
+
+@pytest.mark.asyncio
+async def test_discussions_show_up_and_filter_as_assignments():
+    """A 토론 is something to write, not something to watch, so the "only
+    assignments" filter has to keep it."""
+    await _register("710")
+    todo_list = [
+        make_subject(
+            "English",
+            [("lectures", "Week 3", 10), ("discussions", "논문을 읽고 토론", 30)],
+        )
+    ]
+    api = FakeApi(todo_list=todo_list)
+
+    with mock.patch.object(todos, "KwangwoonUniversityApi", lambda: api):
+        await show_all_assignments(make_message(user_id="710"))
+        callback = make_callback("show_assignments", user_id="710")
+        await process_show_filter_callback(callback)
+
+    text = callback.message.edit_text.call_args[0][0]
+    assert "💬 " in text
+    assert "논문을 읽고 토론" in text
+    assert "Week 3" not in text

@@ -1,4 +1,5 @@
 import base64
+import datetime
 
 import aiohttp
 import pytest
@@ -7,6 +8,8 @@ from yarl import URL
 
 from app.services import kw as kw_service
 from app.services.kw import KwangwoonUniversityApi
+from app.handlers.todos import TYPE_EMOJIS as show_emojis
+from app.services.notifications import TYPE_EMOJIS as notify_emojis
 
 URL_UNDER_TEST = "https://klas.kw.ac.kr/x.do"
 
@@ -325,3 +328,182 @@ async def test_get_student_photo_survives_a_dropped_connection():
     api.session._gets = [ConnectionFailure(), AUTH_REDIRECT, INFO_PAGE]
 
     assert await api.get_student_photo() == PHOTO_BYTES
+
+
+# --- 토론 (discussions) -------------------------------------------------------
+#
+# The only category KLAS lists without a "submitted" flag: participation has to
+# be read out of the posts themselves, one extra request per open discussion.
+
+STUDENT_ID = "2024322505"
+NOW = datetime.datetime(2026, 9, 20, 12, 0)
+
+OPEN_DISCUSSION = {
+    "tpcode": 2,
+    # KLAS leaves the trailing space in; it should not reach the user.
+    "title": "문안나의 논문을 읽고 토론 ",
+    "started": "20260915",
+    "ended": "20260921",
+    "toroncnt": 9,
+}
+CLOSED_DISCUSSION = {
+    "tpcode": 1,
+    "title": "Kwon의 irregular verbs읽고 토론 ",
+    "started": "20260910",
+    "ended": "20260914",
+    "toroncnt": 14,
+}
+
+
+@pytest.fixture
+def fixed_now(monkeypatch):
+    monkeypatch.setattr(kw_service.timezone, "now", lambda: NOW)
+
+
+def _discussion_api(*opinion_payloads):
+    api = _api(*(FakeResponse(payload=payload) for payload in opinion_payloads))
+    api.login_id = STUDENT_ID
+    return api
+
+
+def _post(user_id, title="누군가"):
+    return {"userId": f"{user_id}UA", "name": "학생", "title": title}
+
+
+async def test_an_open_discussion_nobody_joined_is_reported(fixed_now):
+    api = _discussion_api([])
+
+    items = await api._get_not_done_discussions_info(
+        [OPEN_DISCUSSION], "U2026291983220013", "2026,2"
+    )
+
+    assert len(items) == 1
+    assert items[0]["title"] == "문안나의 논문을 읽고 토론"
+    assert items[0]["expire_date"] == "2026-09-21 23:59"
+    # The end date is a bare day, so the deadline is its last minute.
+    assert items[0]["left_time"] == datetime.timedelta(days=1, hours=11, minutes=59)
+
+
+async def test_a_discussion_the_student_already_posted_in_is_skipped(fixed_now):
+    api = _discussion_api([_post("2025322001"), _post(STUDENT_ID), _post("2024322030")])
+
+    assert (
+        await api._get_not_done_discussions_info(
+            [OPEN_DISCUSSION], "U2026291983220013", "2026,2"
+        )
+        == []
+    )
+
+
+async def test_participation_is_not_read_out_of_the_post_title(fixed_now):
+    """Students type the "number name" title by hand, in either order, so a
+    title that merely mentions this student is not their post - only userId is."""
+    api = _discussion_api([_post("2025322001", title=f"{STUDENT_ID} 사비토바다야나")])
+
+    items = await api._get_not_done_discussions_info(
+        [OPEN_DISCUSSION], "U2026291983220013", "2026,2"
+    )
+
+    assert len(items) == 1
+
+
+async def test_discussions_outside_their_dates_are_skipped_without_a_request(fixed_now):
+    """Reading participation costs a request per discussion, so the closed ones
+    must not be looked up at all."""
+    api = _discussion_api([])
+
+    assert (
+        await api._get_not_done_discussions_info(
+            [CLOSED_DISCUSSION], "U2026291983220013", "2026,2"
+        )
+        == []
+    )
+    assert api.session.calls == 0
+
+
+async def test_a_failed_opinion_request_leaves_the_discussion_in_the_list(fixed_now):
+    """A reminder about work already done beats silence about work that isn't."""
+    api = _api(FakeResponse(status=500))
+    api.login_id = STUDENT_ID
+
+    items = await api._get_not_done_discussions_info(
+        [OPEN_DISCUSSION], "U2026291983220013", "2026,2"
+    )
+
+    assert len(items) == 1
+
+
+async def test_discussions_are_reported_when_the_login_id_is_unknown(fixed_now):
+    """login_with_cookies never sees a student number; the 토론 still shows up."""
+    api = _api(FakeResponse(payload=[_post(STUDENT_ID)]))
+
+    items = await api._get_not_done_discussions_info(
+        [OPEN_DISCUSSION], "U2026291983220013", "2026,2"
+    )
+
+    assert len(items) == 1
+
+
+async def test_login_remembers_the_student_number():
+    """The login id is the student number discussion posts are stamped with."""
+    api = _api(ConnectionFailure())
+    api.session.get = lambda *a, **k: ConnectionFailure()
+
+    await api.login(STUDENT_ID, "password")
+
+    assert api.login_id == STUDENT_ID
+
+
+async def test_a_longer_number_starting_the_same_way_is_not_this_student(fixed_now):
+    """The account-type suffix makes userId longer than the number, so the two
+    have to be compared whole rather than with startswith."""
+    api = _discussion_api([_post(STUDENT_ID + "1")])
+
+    items = await api._get_not_done_discussions_info(
+        [OPEN_DISCUSSION], "U2026291983220013", "2026,2"
+    )
+
+    assert len(items) == 1
+
+
+def _returning(value):
+    async def call(*args, **kwargs):
+        return value
+
+    return call
+
+
+async def test_get_todo_list_files_every_category_under_a_known_name(
+    monkeypatch, fixed_now
+):
+    """The wiring nothing else covers: a category get_todo_list forgets, or
+    files under a name the two TYPE_EMOJIS dicts don't know, disappears from
+    /show and from the notification loop with the whole suite still green."""
+    api = _api(
+        FakeResponse(
+            payload=[
+                {"value": "2026,2", "subjList": [{"value": "SUBJ", "name": "English"}]}
+            ]
+        )
+    )
+    api.login_id = STUDENT_ID
+    for name in ("_get_lectures", "_get_homeworks", "_get_team_projects", "_get_quizzes"):
+        monkeypatch.setattr(api, name, _returning([]))
+    monkeypatch.setattr(api, "_get_discussions", _returning([OPEN_DISCUSSION]))
+    monkeypatch.setattr(api, "_get_discussion_opinions", _returning([]))
+
+    todo_list = await api.get_todo_list()
+
+    categories = todo_list[0]["todo"]
+    assert set(categories) == {
+        "lectures",
+        "homeworks",
+        "team_projects",
+        "quizzes",
+        "discussions",
+    }
+    assert set(categories) <= set(show_emojis), "a type /show cannot render"
+    assert set(categories) <= set(notify_emojis), "a type never notified about"
+    assert [item["title"] for item in categories["discussions"]] == [
+        "문안나의 논문을 읽고 토론"
+    ]
