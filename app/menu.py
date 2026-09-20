@@ -4,12 +4,11 @@ from aiogram import types
 
 
 def get_bot_commands(language_code: str) -> list:
-    # 7 entries per language on purpose - everything else (/register,
-    # /unregister, /lregister, /info, /language, /donate) still works when
-    # typed, but is reached through a button on /account, /settings, /show
-    # etc. instead of cluttering this list. See CLAUDE.md / the UI overhaul
-    # notes for why: a command with no button anywhere is the one exception
-    # that's still worth a menu line (there isn't one left in that state).
+    # 7 entries per language on purpose. /register, /unregister, /lregister,
+    # /info, /language and /donate still work when typed, but each one now has
+    # a button (mostly on /account), so it doesn't also need a line here. The
+    # rule for adding one back: a command reachable *only* by typing it is the
+    # one that belongs in this list.
     commands = {
         "ru": {
             "show": "📋 Показать задания KLAS",
