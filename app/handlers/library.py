@@ -4,6 +4,7 @@ import asyncio
 import tempfile
 
 from aiogram import Dispatcher, F, types
+from aiogram.dispatcher.event.bases import SkipHandler
 from aiogram.filters import Command, CommandObject
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
@@ -107,6 +108,18 @@ async def cmd_find_book(message: types.Message, command: CommandObject):
         await message.answer(Strings.get("unexpected_error", user_lang))
 
 
+async def cancel_search_on_command(message: types.Message, state: FSMContext):
+    """A command typed at the "which book?" prompt means the user moved on.
+
+    Without this the state outlives the prompt: the command runs (commands are
+    registered ahead of this state), the state is never cleared, and the user's
+    next ordinary message gets read as a book title. Clears it and skips, so
+    the command they actually typed still runs.
+    """
+    await state.clear()
+    raise SkipHandler
+
+
 async def process_search_query(message: types.Message, state: FSMContext):
     try:
         user_lang = await get_user_language_with_fallback(message)
@@ -116,6 +129,17 @@ async def process_search_query(message: types.Message, state: FSMContext):
         await message.answer(Strings.get("unexpected_error", user_lang))
     finally:
         await state.clear()
+
+
+def register_search_escape(dp: Dispatcher):
+    """Registered ahead of every command handler (see app/bot.py) - after them
+    it would never be offered a command, which is the only thing it exists to
+    catch."""
+    dp.message.register(
+        cancel_search_on_command,
+        SearchStates.waiting_for_query,
+        F.text.startswith("/"),
+    )
 
 
 def register_handlers(dp: Dispatcher):

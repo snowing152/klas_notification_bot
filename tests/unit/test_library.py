@@ -1,8 +1,9 @@
 import pytest
 from unittest.mock import AsyncMock
 from aiogram import types
+from aiogram.dispatcher.event.bases import SkipHandler
 
-from app.handlers.library import cmd_qr
+from app.handlers.library import cancel_search_on_command, cmd_qr
 
 
 def make_message(user_id="800", language_code="en"):
@@ -14,6 +15,19 @@ def make_message(user_id="800", language_code="en"):
     message.from_user = from_user
     message.answer = AsyncMock()
     return message
+
+
+@pytest.mark.asyncio
+async def test_a_command_at_the_book_prompt_clears_the_state_and_skips():
+    """Commands are registered ahead of the search state, so without this the
+    state outlives the prompt and the user's next ordinary message is read as
+    a book title."""
+    state = AsyncMock()
+
+    with pytest.raises(SkipHandler):
+        await cancel_search_on_command(make_message(), state)
+
+    state.clear.assert_awaited_once()
 
 
 @pytest.mark.asyncio

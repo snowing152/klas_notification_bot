@@ -27,7 +27,10 @@ def setup_handlers(dp: Dispatcher):
         settings as settings_handlers,
     )
 
-    # Register all handlers
+    # Register all handlers.
+    # Ahead of every command: it clears an abandoned "which book?" prompt and
+    # then skips, so the command the user typed instead still runs.
+    library.register_search_escape(dp)
     auth.register_handlers(dp)
     todos.register_handlers(dp)
     food.register_handlers(dp)

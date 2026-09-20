@@ -1,6 +1,7 @@
 import time
 import logging
 
+from aiogram.dispatcher.event.bases import CancelHandler, SkipHandler
 from aiogram.types import Message
 from aiogram import BaseMiddleware
 
@@ -32,6 +33,11 @@ class AntiSpamMiddleware(BaseMiddleware):
 
             # Proceed with the next handler
             return await handler(event, data)
+        except (SkipHandler, CancelHandler):
+            # Not errors: aiogram's own control flow for "let the next handler
+            # take this" / "stop here". Retrying the handler below would run it
+            # a second time and log a spurious error.
+            raise
         except Exception as e:
             logging.error(f"Error in AntiSpamMiddleware: {e}")
             return await handler(event, data)
