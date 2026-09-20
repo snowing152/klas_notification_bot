@@ -115,7 +115,6 @@ def _render_chunks(items: list[dict], user_lang, limit: int = 4096) -> list[str]
             user_lang,
             emoji=TYPE_EMOJIS.get(item["type"], "📌"),
             time_str=_format_time_left(item["left_time"], user_lang),
-            type_label=Strings.get(f"type_{item['type']}", user_lang),
             title=item["title"],
             subject=item["subject"],
         )
