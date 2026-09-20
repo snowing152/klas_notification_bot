@@ -207,6 +207,10 @@ def _collect_messages(
     (assignment_key, kind) pairs to record once the matching message is sent.
     """
     thresholds = sorted(TIME_THRESHOLDS) if thresholds is None else thresholds
+    # One instant for the whole cycle: KLAS is read subject by subject over
+    # tens of seconds, so deadlines are carried around as absolute times and
+    # turned into a remaining time only here.
+    now = timezone.now()
     new_message = ""
     new_entries = []
     threshold_messages = {threshold: "" for threshold in TIME_THRESHOLDS}
@@ -223,7 +227,7 @@ def _collect_messages(
                 current_keys.add(key)
 
                 already_sent = sent.get(key, set())
-                left_time = assignment["left_time"]
+                left_time = assignment["expire_at"] - now
                 type_label = Strings.get(f"type_{assignment_type}", user_lang)
 
                 if left_time.total_seconds() <= 0:

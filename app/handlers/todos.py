@@ -12,6 +12,7 @@ from app.keyboards import (
     create_show_filter_keyboard,
     quick_access_labels,
 )
+from app.utils import timezone
 from app.utils.encryption import decrypt_password
 from app.services.kw import KwangwoonUniversityApi
 from app.utils.language_utils import get_user_language_with_fallback
@@ -43,25 +44,34 @@ def forget_cached_items(user_id: str) -> None:
 
 
 def _flatten_and_sort(todo_list: list[dict]) -> list[dict]:
-    """One list across every subject and type, soonest deadline first."""
+    """One list across every subject and type, soonest deadline first.
+
+    What is stored is the deadline, never a countdown: this list is cached for
+    CACHE_TTL_SECONDS, and a countdown frozen at fetch time would still claim
+    the minutes that have passed since. Ordering by deadline is the same order
+    however late it is read, so only the sort can be done here - dropping what
+    is past cannot, and waits for the render.
+    """
     items = []
     for subject in todo_list:
         subject_name = subject.get("name", "Unknown Subject")
         for assignment_type, assignments in subject["todo"].items():
             for assignment in assignments:
-                left_time = assignment["left_time"]
-                if left_time.total_seconds() < 0:
-                    continue
                 items.append(
                     {
                         "type": assignment_type,
                         "subject": subject_name,
                         "title": assignment.get("title", "Untitled"),
-                        "left_time": left_time,
+                        "expire_at": assignment["expire_at"],
                     }
                 )
-    items.sort(key=lambda item: item["left_time"])
+    items.sort(key=lambda item: item["expire_at"])
     return items
+
+
+def _pending(items: list[dict], now) -> list[dict]:
+    """The assignments still open at `now`, deadlines included as they pass."""
+    return [item for item in items if item["expire_at"] > now]
 
 
 async def _load_items(user_id: str) -> tuple[str, list[dict] | None]:
@@ -113,8 +123,12 @@ def _format_time_left(left_time, user_lang) -> str:
     return " ".join(parts)
 
 
-def _render_chunks(items: list[dict], user_lang, limit: int = 4096) -> list[str]:
-    """Message chunks that never cut an item in half."""
+def _render_chunks(items: list[dict], user_lang, now, limit: int = 4096) -> list[str]:
+    """Message chunks that never cut an item in half.
+
+    `now` is passed in rather than read here so that one message measures every
+    line from the same instant.
+    """
     if not items:
         return [Strings.get("no_assignments", user_lang)]
 
@@ -124,7 +138,7 @@ def _render_chunks(items: list[dict], user_lang, limit: int = 4096) -> list[str]
             "show_item",
             user_lang,
             emoji=TYPE_EMOJIS.get(item["type"], "📌"),
-            time_str=_format_time_left(item["left_time"], user_lang),
+            time_str=_format_time_left(item["expire_at"] - now, user_lang),
             title=item["title"],
             subject=item["subject"],
         )
@@ -169,9 +183,11 @@ async def show_all_assignments(message: types.Message):
             await message.answer(Strings.get("unexpected_error", user_lang))
             return
 
-        filtered = _filter_items(items, "all")
-        chunks = _render_chunks(filtered, user_lang)
-        keyboard = _filter_keyboard(items, "all", user_lang)
+        now = timezone.now()
+        pending = _pending(items, now)
+        filtered = _filter_items(pending, "all")
+        chunks = _render_chunks(filtered, user_lang, now)
+        keyboard = _filter_keyboard(pending, "all", user_lang)
         for i, chunk in enumerate(chunks):
             is_last = i == len(chunks) - 1
             await message.answer(chunk, reply_markup=keyboard if is_last else None)
@@ -195,9 +211,11 @@ async def process_show_filter_callback(callback_query: types.CallbackQuery):
             await callback_query.answer(Strings.get("unexpected_error", user_lang))
             return
 
-        filtered = _filter_items(items, category)
-        chunks = _render_chunks(filtered, user_lang)
-        keyboard = _filter_keyboard(items, category, user_lang)
+        now = timezone.now()
+        pending = _pending(items, now)
+        filtered = _filter_items(pending, category)
+        chunks = _render_chunks(filtered, user_lang, now)
+        keyboard = _filter_keyboard(pending, category, user_lang)
 
         try:
             await callback_query.message.edit_text(

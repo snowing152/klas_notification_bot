@@ -125,6 +125,17 @@ either by respecting the host `TZ` — some platforms export `TZ=UTC` themselves
 exactly what this defends against. The `tzdata` pin in `requirements.txt` is what makes
 `ZoneInfo` resolve `Asia/Seoul` without a system tz database.
 
+**Deadlines travel as deadlines, not as countdowns.** Every assignment dict from
+`get_todo_list()` carries `expire_at` — the deadline as naive Seoul time — and nothing
+downstream stores "time left". A countdown is only true at the instant it is computed,
+and this list is built subject by subject over tens of seconds and then cached for five
+minutes, so a stored one drifts twice over: lines of one `/show` would be measured from
+different instants, and a cached list would keep claiming minutes already gone.
+`todos._render_chunks` and `notifications._collect_messages` each take a single
+`timezone.now()` and subtract it at render. Dropping what is already past belongs to the
+same moment — `todos._pending`, not `_flatten_and_sort`, which may only sort, since the
+order by deadline holds however late the cache is read.
+
 **`DATA_DIR`** is where `bot_users.db` and the key file live. It is validated, not
 created: a missing directory raises, because on a PaaS it almost always means an unmounted
 volume, and silently writing to ephemeral storage loses every user on the next deploy.

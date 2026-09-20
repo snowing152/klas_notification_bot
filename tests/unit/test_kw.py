@@ -381,7 +381,7 @@ async def test_an_open_discussion_nobody_joined_is_reported(fixed_now):
     assert items[0]["title"] == "문안나의 논문을 읽고 토론"
     assert items[0]["expire_date"] == "2026-09-21 23:59"
     # The end date is a bare day, so the deadline is its last minute.
-    assert items[0]["left_time"] == datetime.timedelta(days=1, hours=11, minutes=59)
+    assert items[0]["expire_at"] == datetime.datetime(2026, 9, 21, 23, 59)
 
 
 async def test_a_discussion_the_student_already_posted_in_is_skipped(fixed_now):
