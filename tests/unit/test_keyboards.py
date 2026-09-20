@@ -21,9 +21,9 @@ def test_quick_access_keyboard_uses_localized_labels():
     markup = create_quick_access_keyboard(Language.KO)
     labels = [button.text for row in markup.keyboard for button in row]
 
+    # Only the two things used often enough to earn a permanent button -
+    # /menu and /news stay reachable from the command menu instead.
     assert labels == [
         Strings.get("button_todos", Language.KO),
         Strings.get("button_qr", Language.KO),
-        Strings.get("button_menu", Language.KO),
-        Strings.get("button_news", Language.KO),
     ]

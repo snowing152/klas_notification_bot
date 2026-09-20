@@ -5,15 +5,14 @@ from app.strings import Strings, Language
 
 
 def create_quick_access_keyboard(user_lang: Language):
+    # Only the two things worth a permanent, always-on-screen button: /menu
+    # and /news are reachable from the command menu instead, since they're
+    # opened far less often than assignments or the library QR pass.
     keyboard = ReplyKeyboardMarkup(
         keyboard=[
             [
                 KeyboardButton(text=Strings.get("button_todos", user_lang)),
                 KeyboardButton(text=Strings.get("button_qr", user_lang)),
-            ],
-            [
-                KeyboardButton(text=Strings.get("button_menu", user_lang)),
-                KeyboardButton(text=Strings.get("button_news", user_lang)),
             ],
         ],
         resize_keyboard=True,
