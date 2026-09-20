@@ -4,62 +4,48 @@ from aiogram import types
 
 
 def get_bot_commands(language_code: str) -> list:
+    # 7 entries per language on purpose - everything else (/register,
+    # /unregister, /lregister, /info, /language, /donate) still works when
+    # typed, but is reached through a button on /account, /settings, /show
+    # etc. instead of cluttering this list. See CLAUDE.md / the UI overhaul
+    # notes for why: a command with no button anywhere is the one exception
+    # that's still worth a menu line (there isn't one left in that state).
     commands = {
         "ru": {
-            "qr": "📱 Сгенерировать QR для библиотеки",
             "show": "📋 Показать задания KLAS",
+            "qr": "📱 Сгенерировать QR для библиотеки",
             "menu": "🍲 Меню столовой",
             "news": "📰 Новости KW",
-            "info": "ℹ️ Информация о студенте",
-            "register": "💁‍♂️ Войти в KLAS",
-            "unregister": "🚫 Удалить данные",
-            "lregister": "📚 Войти в KW библиотеку",
-            "language": "🌍 Изменить язык",
+            "account": "👤 Мой аккаунт (KLAS, библиотека)",
             "settings": "⚙️ Настройки уведомлений",
             "start": "🏁 Информация о боте",
-            "donate": "💰 Поддержать разработчика",
         },
         "ko": {
-            "qr": "📱 도서관 QR 코드 생성",
             "show": "📋 KLAS 과제 확인",
+            "qr": "📱 도서관 QR 코드 생성",
             "menu": "🍲 식당 메뉴 확인",
             "news": "📰 KW 뉴스",
-            "info": "ℹ️ 학생 정보 확인",
-            "register": "💁‍♂️ KLAS 로그인",
-            "unregister": "🚫 인증 정보 삭제",
-            "lregister": "📚 KW 도서관 로그인",
-            "language": "🌍 언어 변경",
+            "account": "👤 내 계정 (KLAS, 도서관)",
             "settings": "⚙️ 알림 설정",
             "start": "🏁 봇 정보",
-            "donate": "💰 개발자 후원",
         },
         "en": {
-            "qr": "📱 Generate QR for library",
             "show": "📋 Show KLAS assignments",
+            "qr": "📱 Generate QR for library",
             "menu": "🍲 Show dining menu",
             "news": "📰 KW news",
-            "info": "ℹ️ Student info",
-            "register": "💁‍♂️ Login to KLAS",
-            "unregister": "🚫 Delete credentials",
-            "lregister": "📚 Login to library",
-            "language": "🌍 Change language",
+            "account": "👤 My account (KLAS, library)",
             "settings": "⚙️ Notification settings",
             "start": "🏁 Bot info",
-            "donate": "💰 Donate to developer",
         },
         "default": {
-            "qr": "📱 Generate a library QR code (도서관 QR 코드를 생성).",
             "show": "📋 Display tasks from KLAS (KLAS 과제를 확인).",
+            "qr": "📱 Generate a library QR code (도서관 QR 코드를 생성).",
             "menu": "🍲 Check the cafeteria menu (식당 메뉴를 확인).",
             "news": "📰 Show KW website news (광운대 최신 뉴스를 보여줌).",
-            "info": "ℹ️ View your student info (학생 정보를 확인).",
-            "register": "💁‍♂️ Log in to KLAS (KLAS에 로그인).",
-            "unregister": "🚫 Delete your credentials (인증 정보를 삭제).",
-            "lregister": "📚 Log in to KW library (도서관에 로그인).",
-            "language": "🌍 Change the bot’s language (언어를 변경).",
+            "account": "👤 KLAS and library login (KLAS와 도서관 로그인).",
             "settings": "⚙️ Notification settings (알림 설정).",
             "start": "🏁 Show bot info (봇 정보를 보여줌).",
-            "donate": "💰 Support the developer (개발자를 후원).",
         },
     }
 
