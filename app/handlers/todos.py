@@ -34,6 +34,13 @@ CACHE_TTL_SECONDS = 300
 _items_cache: dict[str, tuple[float, list[dict]]] = {}
 
 
+def forget_cached_items(user_id: str) -> None:
+    """Drop a user's cached assignments. Called when their data is deleted:
+    the cache is consulted before the database, so without this /show would
+    keep serving their assignment list out of memory until the TTL expired."""
+    _items_cache.pop(user_id, None)
+
+
 def _flatten_and_sort(todo_list: list[dict]) -> list[dict]:
     """One list across every subject and type, soonest deadline first."""
     items = []

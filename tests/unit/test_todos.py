@@ -207,6 +207,33 @@ async def test_a_second_show_within_the_cache_window_does_not_hit_klas_again():
 
 
 @pytest.mark.asyncio
+async def test_deleting_a_users_data_drops_their_cached_assignments():
+    """The cache is consulted before the database, so a user who deleted
+    everything would otherwise keep being shown their assignments from
+    memory until the TTL ran out."""
+    from app.handlers.auth import delete_all_user_data
+
+    await _register("709")
+    todo_list = [make_subject("Algorithms", [("homeworks", "Secret report", 5)])]
+    api = FakeApi(todo_list=todo_list)
+
+    with mock.patch.object(todos, "KwangwoonUniversityApi", lambda: api):
+        await show_all_assignments(make_message(user_id="709"))
+        assert "709" in todos._items_cache
+
+        await delete_all_user_data("709")
+        assert "709" not in todos._items_cache
+
+        message = make_message(user_id="709")
+        await show_all_assignments(message)
+
+    # Back to "you need to register", not the cached list
+    text = message.answer.call_args[0][0]
+    assert "Secret report" not in text
+    assert text == Strings.get("need_to_register", Language.EN)
+
+
+@pytest.mark.asyncio
 async def test_filter_callback_serves_from_cache_and_narrows_the_view():
     await _register("708")
     todo_list = [
