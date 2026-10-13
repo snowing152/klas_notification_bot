@@ -24,6 +24,22 @@ RETRY_DELAY_SECONDS = 1
 # Without this aiohttp waits its 5-minute default, and one hung KLAS request
 # stalls the notification cycle for every remaining user.
 REQUEST_TIMEOUT_SECONDS = 30
+# get_todo_list() asks about every subject at once, five requests each, so a
+# full timetable would be 30-odd in flight - and the notification cycle reads
+# several users at a time on top of that. KLAS is a university server that
+# never agreed to serve a bot, and it sees one address whoever the request is
+# for, so the cap is on the process and not on one user's refresh.
+MAX_CONCURRENT_REQUESTS = 10
+# Module-level because every KwangwoonUniversityApi has to share it. Login is
+# not counted: its three requests run one after another.
+_request_slots = asyncio.Semaphore(MAX_CONCURRENT_REQUESTS)
+
+
+def _leaf_errors(error: BaseException) -> List[BaseException]:
+    """The real failures inside what a TaskGroup raised, however deep."""
+    if isinstance(error, BaseExceptionGroup):
+        return [leaf for inner in error.exceptions for leaf in _leaf_errors(inner)]
+    return [error]
 
 
 class KwangwoonUniversityApi:
@@ -236,16 +252,19 @@ class KwangwoonUniversityApi:
                 logging.error(f"Non-JSON response from {url}: {e}")
                 return None
 
-        return await self._request_with_retries(
-            url,
-            lambda: self.session.post(
-                url=url,
-                json=body,
-                headers=headers or self.headers,
-                cookies=self.cookies,
-            ),
-            read_body,
-        )
+        # The slot is held across the retries: a request waiting out its
+        # retry delay is still one KLAS is about to hear from again.
+        async with _request_slots:
+            return await self._request_with_retries(
+                url,
+                lambda: self.session.post(
+                    url=url,
+                    json=body,
+                    headers=headers or self.headers,
+                    cookies=self.cookies,
+                ),
+                read_body,
+            )
 
     async def get_subjects(self) -> Optional[Dict]:
         if not self._cookies_is_valid():
@@ -453,14 +472,16 @@ class KwangwoonUniversityApi:
         if not open_discussions:
             return []
 
-        opinions = await asyncio.gather(
-            *(
-                self._get_discussion_opinions(
-                    subject_id, year, discussion.get("tpcode")
+        async with asyncio.TaskGroup() as group:
+            requests = [
+                group.create_task(
+                    self._get_discussion_opinions(
+                        subject_id, year, discussion.get("tpcode")
+                    )
                 )
                 for discussion in open_discussions
-            )
-        )
+            ]
+        opinions = [request.result() for request in requests]
 
         not_done_discussions = []
         for discussion, posts in zip(open_discussions, opinions):
@@ -488,8 +509,8 @@ class KwangwoonUniversityApi:
         """The deadline itself, as naive Korean local time.
 
         Deliberately not "how long is left": a countdown is only true at the
-        moment it is computed, and this list is built over tens of seconds and
-        then cached for minutes. Callers subtract it from a single `now()` of
+        moment it is computed, and this list takes seconds to build on a slow
+        day and is then cached for minutes. Callers subtract it from a single `now()` of
         their own when they render, so every line of one message is measured
         from the same instant and a cached list never goes stale.
         """
@@ -497,6 +518,48 @@ class KwangwoonUniversityApi:
         if remove_timezone:
             expire_date_time = expire_date_time.replace(tzinfo=None)
         return expire_date_time
+
+    async def _get_subject_todo(self, subject_id: str, year: str) -> Dict:
+        """One subject's unfinished work, filed by category."""
+        try:
+            async with asyncio.TaskGroup() as group:
+                requests = [
+                    group.create_task(fetch(subject_id, year))
+                    for fetch in (
+                        self._get_lectures,
+                        self._get_homeworks,
+                        self._get_team_projects,
+                        self._get_quizzes,
+                        self._get_discussions,
+                    )
+                ]
+            lectures, homeworks, team_projects, quizzes, discussions = (
+                request.result() for request in requests
+            )
+
+            if None in (lectures, homeworks, team_projects, quizzes, discussions):
+                # One rejected request should cost this subject's missing
+                # category, not the whole user's todo list.
+                logging.warning(
+                    f"Incomplete assignment data for subject {subject_id}"
+                )
+
+            return {
+                "lectures": self._get_not_done_lectures_info(lectures or []),
+                "homeworks": self._get_not_done_homeworks_info(homeworks or []),
+                "team_projects": self._get_not_done_team_projects_info(
+                    team_projects or []
+                ),
+                "quizzes": self._get_not_done_quizzes_info(quizzes or []),
+                "discussions": await self._get_not_done_discussions_info(
+                    discussions or [], subject_id, year
+                ),
+            }
+        except Exception as e:
+            # The traceback get_todo_list() logs is the only place a failure
+            # in a parser, which names no URL, can say which subject it was.
+            e.add_note(f"while reading subject {subject_id}")
+            raise
 
     async def get_todo_list(self) -> Optional[List[Dict]]:
         if not self._cookies_is_valid():
@@ -512,50 +575,34 @@ class KwangwoonUniversityApi:
         ]
 
         try:
-            subject_semester = subjects.get("value")
+            year = subjects.get("value")
 
-            # Use asyncio.gather to fetch all data concurrently
-            for todo in todo_list:
-                year = subject_semester
-                subject_id = todo.get("id")
-
-                (
-                    lectures,
-                    homeworks,
-                    team_projects,
-                    quizzes,
-                    discussions,
-                ) = await asyncio.gather(
-                    self._get_lectures(subject_id, year),
-                    self._get_homeworks(subject_id, year),
-                    self._get_team_projects(subject_id, year),
-                    self._get_quizzes(subject_id, year),
-                    self._get_discussions(subject_id, year),
-                )
-
-                if None in (lectures, homeworks, team_projects, quizzes, discussions):
-                    # One rejected request should cost this subject's missing
-                    # category, not the whole user's todo list.
-                    logging.warning(
-                        f"Incomplete assignment data for subject {subject_id}"
-                    )
-
-                todo["todo"] = {
-                    "lectures": self._get_not_done_lectures_info(lectures or []),
-                    "homeworks": self._get_not_done_homeworks_info(homeworks or []),
-                    "team_projects": self._get_not_done_team_projects_info(
-                        team_projects or []
-                    ),
-                    "quizzes": self._get_not_done_quizzes_info(quizzes or []),
-                    "discussions": await self._get_not_done_discussions_info(
-                        discussions or [], subject_id, year
-                    ),
-                }
+            # Every subject at once, not one after another. Each wait is a
+            # round trip to Korea from a host that is nowhere near it, and
+            # taken in turn a six-subject timetable was six of them where one
+            # would do. TaskGroups rather than gather(), here and below, so
+            # that one failed request cancels everything else in flight,
+            # instead of leaving it to run against a session the caller is
+            # about to close.
+            async with asyncio.TaskGroup() as group:
+                tasks = [
+                    group.create_task(self._get_subject_todo(todo.get("id"), year))
+                    for todo in todo_list
+                ]
+            for todo, task in zip(todo_list, tasks):
+                todo["todo"] = task.result()
 
             return todo_list
 
         except Exception as e:
-            logging.error(f"An error occurred while getting todo list: {e}")
+            # A TaskGroup reports its failures wrapped in a group whose own
+            # message names none of them, and two subjects can fail for
+            # different reasons at once: a dropped connection must not hide a
+            # parser that breaks on every cycle.
+            causes = "; ".join(repr(leaf) for leaf in _leaf_errors(e))
+            logging.error(
+                f"An error occurred while getting todo list: {causes}", exc_info=e
+            )
             return None
 
     async def _make_student_info_request(self, url: str) -> Optional[Dict]:

@@ -29,8 +29,8 @@ TYPE_EMOJIS = {
     "discussions": "💬",
 }
 
-# get_todo_list() logs in and issues a gather() of 5 requests per subject, so
-# a filter tap re-running it would feel like a hang. Cache the flattened,
+# get_todo_list() logs in and makes five requests per subject, so a filter
+# tap re-running it would feel like a hang. Cache the flattened,
 # already-sorted list per user for a few minutes instead.
 CACHE_TTL_SECONDS = 300
 _items_cache: dict[str, tuple[float, list[dict]]] = {}

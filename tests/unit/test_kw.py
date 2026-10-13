@@ -1,3 +1,4 @@
+import asyncio
 import base64
 import datetime
 
@@ -85,6 +86,17 @@ class FakeSession:
 def instant_retries(monkeypatch):
     """The retry delay is real seconds in production; don't sleep them here."""
     monkeypatch.setattr(kw_service, "RETRY_DELAY_SECONDS", 0)
+
+
+@pytest.fixture(autouse=True)
+def own_request_slots(monkeypatch):
+    """The request cap is one semaphore for the whole process, and a semaphore
+    that ever made someone wait belongs to that test's event loop from then on."""
+    monkeypatch.setattr(
+        kw_service,
+        "_request_slots",
+        asyncio.Semaphore(kw_service.MAX_CONCURRENT_REQUESTS),
+    )
 
 
 def _api(*outcomes):
@@ -507,3 +519,222 @@ async def test_get_todo_list_files_every_category_under_a_known_name(
     assert [item["title"] for item in categories["discussions"]] == [
         "문안나의 논문을 읽고 토론"
     ]
+
+
+CATEGORY_FETCHERS = (
+    "_get_lectures",
+    "_get_homeworks",
+    "_get_team_projects",
+    "_get_quizzes",
+    "_get_discussions",
+)
+
+
+def _todo_api(monkeypatch, *subject_ids):
+    """An api that lists these subjects and finds nothing to do in any."""
+    api = _api(
+        FakeResponse(
+            payload=[
+                {
+                    "value": "2026,2",
+                    "subjList": [
+                        {"value": subject_id, "name": subject_id}
+                        for subject_id in subject_ids
+                    ],
+                }
+            ]
+        )
+    )
+    api.login_id = STUDENT_ID
+    for name in CATEGORY_FETCHERS:
+        monkeypatch.setattr(api, name, _returning([]))
+    monkeypatch.setattr(api, "_get_discussion_opinions", _returning([]))
+    return api
+
+
+async def test_get_todo_list_asks_about_every_subject_at_once(monkeypatch, fixed_now):
+    """Taken in turn, each subject is one more round trip to Korea before the
+    user sees anything. No lecture request here answers until every subject's
+    has gone out, which a subject-by-subject loop can never satisfy."""
+    subject_ids = ["A", "B", "C"]
+    api = _todo_api(monkeypatch, *subject_ids)
+    started = []
+    all_started = asyncio.Event()
+
+    async def lectures(subject_id, year):
+        started.append(subject_id)
+        if len(started) == len(subject_ids):
+            all_started.set()
+        await asyncio.wait_for(all_started.wait(), timeout=1)
+        return []
+
+    monkeypatch.setattr(api, "_get_lectures", lectures)
+
+    todo_list = await api.get_todo_list()
+
+    assert todo_list is not None, "the subjects were fetched one after another"
+    assert [subject["id"] for subject in todo_list] == subject_ids
+
+
+async def test_get_todo_list_keeps_each_answer_with_its_subject(monkeypatch, fixed_now):
+    """Answers come back in whatever order KLAS finishes them; the first
+    subject listed answering last must not hand its work to another."""
+    api = _todo_api(monkeypatch, "SLOW", "FAST")
+    fast_answered = asyncio.Event()
+
+    async def discussions(subject_id, year):
+        if subject_id == "SLOW":
+            await asyncio.wait_for(fast_answered.wait(), timeout=1)
+        else:
+            fast_answered.set()
+        return [{**OPEN_DISCUSSION, "title": f"토론 for {subject_id}"}]
+
+    monkeypatch.setattr(api, "_get_discussions", discussions)
+
+    todo_list = await api.get_todo_list()
+
+    assert {
+        subject["id"]: [item["title"] for item in subject["todo"]["discussions"]]
+        for subject in todo_list
+    } == {"SLOW": ["토론 for SLOW"], "FAST": ["토론 for FAST"]}
+
+
+def _hanging(cancelled, label):
+    """A request that never answers, and reports being cancelled."""
+
+    async def call(subject_id, year):
+        try:
+            await asyncio.sleep(60)
+        except asyncio.CancelledError:
+            cancelled.append((label, subject_id))
+            raise
+
+    return call
+
+
+async def test_get_todo_list_cancels_everything_in_flight_when_one_request_fails(
+    monkeypatch, fixed_now
+):
+    """A subject whose requests never got through fails the whole list, as it
+    always has - and nothing is left running against a session the caller
+    closes next: not the other subjects, not the failed subject's own other
+    requests."""
+    api = _todo_api(monkeypatch, "BROKEN", "PENDING")
+    cancelled = []
+    hanging_quizzes = _hanging(cancelled, "quizzes")
+
+    async def quizzes(subject_id, year):
+        if subject_id == "BROKEN":
+            raise aiohttp.ServerDisconnectedError()
+        return await hanging_quizzes(subject_id, year)
+
+    monkeypatch.setattr(api, "_get_quizzes", quizzes)
+    monkeypatch.setattr(api, "_get_lectures", _hanging(cancelled, "lectures"))
+
+    assert await api.get_todo_list() is None
+    assert sorted(cancelled) == [
+        ("lectures", "BROKEN"),
+        ("lectures", "PENDING"),
+        ("quizzes", "PENDING"),
+    ]
+
+
+async def test_a_failed_opinion_request_cancels_the_other_discussions(fixed_now):
+    api = _discussion_api()
+    cancelled = []
+    hanging = _hanging(cancelled, "opinions")
+
+    async def opinions(subject_id, year, tpcode):
+        if tpcode == "BROKEN":
+            raise aiohttp.ServerDisconnectedError()
+        return await hanging(tpcode, year)
+
+    api._get_discussion_opinions = opinions
+
+    with pytest.raises(ExceptionGroup):
+        await api._get_not_done_discussions_info(
+            [
+                {**OPEN_DISCUSSION, "tpcode": "BROKEN"},
+                {**OPEN_DISCUSSION, "tpcode": "PENDING"},
+            ],
+            "SUBJ",
+            "2026,2",
+        )
+
+    assert cancelled == [("opinions", "PENDING")]
+
+
+async def test_get_todo_list_logs_every_failure_and_its_subject(
+    monkeypatch, fixed_now, caplog
+):
+    """Two subjects failing in the same instant, for unrelated reasons: a
+    dropped connection must not be all the log has to say when the other one is
+    a parser that will break again on every cycle."""
+    api = _todo_api(monkeypatch, "OFFLINE", "MALFORMED")
+    both_asked = asyncio.Event()
+    asked = []
+
+    async def homeworks(subject_id, year):
+        asked.append(subject_id)
+        if len(asked) == 2:
+            both_asked.set()
+        await asyncio.wait_for(both_asked.wait(), timeout=1)
+        if subject_id == "OFFLINE":
+            raise aiohttp.ServerDisconnectedError()
+        raise TypeError("'<' not supported between 'NoneType' and 'str'")
+
+    monkeypatch.setattr(api, "_get_homeworks", homeworks)
+
+    assert await api.get_todo_list() is None
+    assert "ServerDisconnectedError" in caplog.messages[-1]
+    assert "TypeError" in caplog.messages[-1]
+    assert "while reading subject OFFLINE" in caplog.text
+    assert "while reading subject MALFORMED" in caplog.text
+
+
+class CountingSession:
+    """Answers every request, and remembers how many were open at once."""
+
+    def __init__(self):
+        self.in_flight = 0
+        self.peak = 0
+
+    def post(self, *args, **kwargs):
+        return _CountedRequest(self)
+
+
+class _CountedRequest:
+    def __init__(self, session):
+        self._session = session
+
+    async def __aenter__(self):
+        self._session.in_flight += 1
+        self._session.peak = max(self._session.peak, self._session.in_flight)
+        # Give every other request its chance to open while this one is.
+        await asyncio.sleep(0)
+        return FakeResponse(payload={})
+
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        self._session.in_flight -= 1
+        return False
+
+
+async def test_post_json_never_has_more_than_the_cap_in_flight():
+    """Fetching every subject at once must not turn into 30 simultaneous
+    requests against KLAS - and the notification cycle reads several users at
+    a time, each through an api of its own, so the cap has to hold across all
+    of them rather than for each."""
+    session = CountingSession()
+    apis = [_api() for _ in range(3)]
+    for api in apis:
+        api.session = session
+
+    await asyncio.gather(
+        *(
+            api._post_json(URL_UNDER_TEST, {})
+            for api in apis
+            for _ in range(kw_service.MAX_CONCURRENT_REQUESTS)
+        )
+    )
+
+    assert session.peak == kw_service.MAX_CONCURRENT_REQUESTS

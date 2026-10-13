@@ -42,7 +42,9 @@ TYPE_EMOJIS = {
 # How many users a cycle reads from KLAS at once. Deliberately small: KLAS
 # drops connections under light load already (that is what the retries in
 # kw.py exist for), and one user is itself several requests. The goal is to
-# stop a slow user from holding up everyone behind them, not to fan out wide.
+# stop a slow user from holding up everyone behind them, not to fan out wide:
+# however many users are being read, kw.MAX_CONCURRENT_REQUESTS bounds what
+# KLAS actually receives at one moment.
 MAX_CONCURRENT_USERS = 5
 
 # A single failed login is usually KLAS being KLAS. Three in a row (an hour and
@@ -208,9 +210,9 @@ def _collect_messages(
     (assignment_key, kind) pairs to record once the matching message is sent.
     """
     thresholds = sorted(TIME_THRESHOLDS) if thresholds is None else thresholds
-    # One instant for the whole cycle: KLAS is read subject by subject over
-    # tens of seconds, so deadlines are carried around as absolute times and
-    # turned into a remaining time only here.
+    # One instant for the whole cycle: reading KLAS takes seconds on a slow
+    # day, so deadlines are carried around as absolute times and turned into
+    # a remaining time only here.
     now = timezone.now()
     new_message = ""
     new_entries = []

@@ -42,6 +42,17 @@ covered by [Voice and other media are refused](#voice-and-other-media-are-refuse
 - **Workaround:** change `MODEL` to a current one and redeploy.
 - **Where:** `app/services/llm.py`.
 
+### A stalled KLAS endpoint holds the request slots
+
+- **Symptom:** while KLAS accepts connections but does not answer, `/show` waits about a
+  minute and a half before reporting a failed login, and a notification cycle gets
+  through its users a few at a time instead of five.
+- **Cause:** a request keeps its slot of `MAX_CONCURRENT_REQUESTS` through all three
+  attempts, 30 seconds each, and the slots are shared by the whole process.
+- **Workaround:** none; it clears when KLAS answers again, and nothing is sent wrongly
+  in the meantime.
+- **Where:** `_post_json` and `_request_with_retries` in `app/services/kw.py`.
+
 ## Conversation state
 
 ### A restart loses a registration in progress
@@ -135,6 +146,20 @@ covered by [Voice and other media are refused](#voice-and-other-media-are-refuse
   reason.
 - **Where:** `_collect_messages`, `_log_holds` and `QUIET_HOURS_EXEMPT` in
   `app/services/notifications.py`.
+
+### A request KLAS rejects reads as "no assignments"
+
+- **Symptom:** an assignment is announced as new a second time and its reminders repeat;
+  or `/show` lacks a category for up to five minutes. The log has `Incomplete assignment
+  data for subject ...` shortly before.
+- **Cause:** a list request answered with an error status or a non-JSON body is not
+  retried and becomes an empty category, and `get_todo_list()` still succeeds. The cycle
+  then prunes `sent_notifications` for everything "no longer listed", so the next
+  complete read looks new. `/show` caches the short list like any other.
+- **Workaround:** none. The fix is to skip pruning (and caching) when any category came
+  back `None`, which needs `get_todo_list()` to say so.
+- **Where:** `_get_subject_todo` in `app/services/kw.py`; `_process_user` and
+  `prune_sent_notifications`; `_load_items` in `app/handlers/todos.py`.
 
 ### An assignment is identified by its title
 

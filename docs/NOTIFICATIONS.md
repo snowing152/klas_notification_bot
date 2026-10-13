@@ -37,6 +37,9 @@ One cycle, per user (`_process_user`):
 
 Users are processed `MAX_CONCURRENT_USERS = 5` at a time. That is deliberately small:
 KLAS drops connections under light load already, and one user is itself several requests.
+However many users are being read, `MAX_CONCURRENT_REQUESTS` in `kw.py` bounds what KLAS
+receives at one moment ([KLAS.md](KLAS.md#the-client)); a `/show` during a cycle shares
+those slots and is slower for it.
 `_process_user` handles its own errors, so one broken account never aborts a cycle.
 
 Each cycle ends with one summary line — `Notification cycle finished: all N users
