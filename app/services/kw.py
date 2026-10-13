@@ -617,7 +617,12 @@ class KwangwoonUniversityApi:
             # message names none of them, and two subjects can fail for
             # different reasons at once: a dropped connection must not hide a
             # parser that breaks on every cycle.
-            causes = "; ".join(repr(leaf) for leaf in _leaf_errors(e))
+            # Named by type and str(), never repr(): the repr of an aiohttp
+            # response error prints the request headers, and the Cookie among
+            # them is this student's live KLAS session.
+            causes = "; ".join(
+                f"{type(leaf).__name__}: {leaf}" for leaf in _leaf_errors(e)
+            )
             logging.error(
                 f"An error occurred while getting todo list: {causes}", exc_info=e
             )
