@@ -63,7 +63,7 @@ async def test_defaults_match_the_previous_behaviour():
     assert settings_row.deadline_alerts is True
     assert settings_row.urgent_thresholds_only is False
     assert settings_row.quiet_hours is True
-    assert (settings_row.quiet_start, settings_row.quiet_end) == (23, 8)
+    assert (settings_row.quiet_start, settings_row.quiet_end) == (1, 8)
 
 
 @pytest.mark.asyncio

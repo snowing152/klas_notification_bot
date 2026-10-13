@@ -80,14 +80,15 @@ def in_quiet_hours(settings_row, now=None) -> bool:
         return False
 
     hour = (now or timezone.now()).hour
-    start = getattr(settings_row, "quiet_start", 23)
+    start = getattr(settings_row, "quiet_start", 1)
     end = getattr(settings_row, "quiet_end", 8)
 
     if start == end:
         return False
     if start < end:
+        # The usual case: 01:00 to 08:00.
         return start <= hour < end
-    # The usual case: the window crosses midnight (23:00 to 08:00).
+    # A window that crosses midnight, such as 23:00 to 08:00.
     return hour >= start or hour < end
 
 

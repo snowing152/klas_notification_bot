@@ -82,10 +82,12 @@ class UserSettings(Base):
     # Only the 6/3/1 hour thresholds, for students who found six messages per
     # assignment too much.
     urgent_thresholds_only = Column(Boolean, nullable=False, default=False)
-    # KLAS deadlines are usually 23:59, so the 24h and 12h warnings land at
-    # night. Held notifications go out on the first cycle after quiet_end.
+    # A night's sleep, not an evening. KLAS deadlines are usually 23:59, so the
+    # 24h warning falls due at midnight: a window opening at 23:00 held it
+    # until morning, when sixteen hours were left. Held notifications go out on
+    # the first cycle after quiet_end.
     quiet_hours = Column(Boolean, nullable=False, default=True)
-    quiet_start = Column(Integer, nullable=False, default=23)
+    quiet_start = Column(Integer, nullable=False, default=1)
     quiet_end = Column(Integer, nullable=False, default=8)
 
 
