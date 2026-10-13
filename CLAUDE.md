@@ -72,7 +72,13 @@ quiet hours are read through `timezone.now()`, so they are Korean local hours. T
 no migration tool: `init_db` is `create_all`, which only adds tables, and a default
 changed in `models.py` reaches new rows alone. A change that must reach existing users
 goes into `DATA_FIXES` in `app/database/database.py` — each runs once per database,
-counted in SQLite's `user_version`.
+counted in SQLite's `user_version`. Two things the loop does keep in memory, neither of
+which decides on its own what a restart sends: `_unrecorded` (delivered, but the database
+refused the row — treated as sent and written on a later cycle, so a locked database
+cannot repeat a reminder every 30 minutes) and `_holding`, which only turns quiet hours
+into one "held" log line when a hold begins and one "dropped unsent" line if it ends with
+no message. A held reminder is not a queued one: only the tightest threshold a deadline
+fits in is ever built, so a 6h reminder held overnight is gone once 3h is reached.
 `announcements_seen` is keyed by announcement name, which is what makes
 `app/services/announcements.py` safe to run on every startup.
 
@@ -172,9 +178,16 @@ Two supported targets: systemd (`botdaemon.service`, placeholders to fill in) an
 detects `RAILWAY_ENVIRONMENT` and skips the `logs/kwbot.log` file handler there; stdout
 logging is always on. On Railway each line goes out as one JSON object
 (`app/utils/log_format.py`): a plain line on stdout is "info" to Railway whatever it
-says, and only `level` makes an ERROR findable by severity. Log times are Korean on
-every host, read from `ZoneInfo` like `timezone.now()` — the Railway image has no system
-tz database, so the process `TZ` there is UTC in practice.
+says, and only `level` makes an ERROR findable by severity. "On Railway" means
+`RAILWAY_ENVIRONMENT` *and* stdout not being a terminal, since `railway run` sets the
+variable in a local shell too. Log times are Korean on every host, read from `ZoneInfo`
+like `timezone.now()` — the Railway image has no system tz database, so the process `TZ`
+there is UTC in practice. `main.py` calls `configure_logging` **before** importing the
+rest of `app`, because `app/config.py` raising at import is the likeliest startup failure
+and an uncaught exception only becomes a log entry through the `sys.excepthook` installed
+there. That is why `app/utils/__init__.py` is empty and must stay so: anything it imports
+runs on the way to `app.utils.log_format`, and an import of config there puts the failure
+back ahead of the logging.
 
 `.gitignore` excludes `*.json` wholesale with `!railway.json` re-added — a new committed
 JSON file needs its own negation.

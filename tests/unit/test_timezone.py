@@ -1,33 +1,7 @@
 import datetime
-import os
-import time
 from zoneinfo import ZoneInfo
 
-import pytest
-
 from app.utils import timezone
-
-
-@pytest.fixture
-def host_timezone():
-    """Move the *process* clock to another zone, the way a US host would.
-
-    app/config.py forces TZ=Asia/Seoul at import, so the test has to undo that
-    to reproduce what the deployment actually looks like.
-    """
-    original = os.environ.get("TZ")
-
-    def _set(name: str):
-        os.environ["TZ"] = name
-        time.tzset()
-
-    yield _set
-
-    if original is None:
-        del os.environ["TZ"]
-    else:
-        os.environ["TZ"] = original
-    time.tzset()
 
 
 def test_now_is_korean_time_on_a_non_korean_host(host_timezone):

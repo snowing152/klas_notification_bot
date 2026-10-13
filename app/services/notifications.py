@@ -273,28 +273,87 @@ def _collect_messages(
     )
 
 
-async def _process_user(user) -> tuple[bool, int, int]:
+# What quiet hours are keeping back right now, per user, under the labels the
+# "Notification sent" lines use. It exists for the log alone: a hold is checked
+# again every cycle of the night, and this is what makes it one line when it
+# begins and one more if it ends with nothing sent, instead of fourteen
+# repeats. In memory on purpose - nothing reads it to decide what to send, and
+# after a restart the worst case is a hold announced a second time.
+_holding: dict[str, set[str]] = {}
+
+# Delivered, but the database refused the row. Kept here and treated as sent,
+# or the same reminder would go out again every cycle until a write succeeds.
+_unrecorded: dict[str, list] = {}
+
+
+def _log_holds(user_id: str, held: set, attempted: set) -> None:
+    """Say which holds began this cycle and which ended without a message.
+
+    A held reminder is not a queued one. _collect_messages keeps only the
+    tightest threshold a deadline still fits in, so a 6h reminder held at 01:00
+    is gone once 3h is reached, and work handed in overnight leaves nothing to
+    say in the morning. `attempted` is what a send was tried for this cycle:
+    those have their own "Notification sent" or "Error sending" line.
+    """
+    before = _holding.get(user_id, set())
+
+    for label in sorted(held - before):
+        logging.info(f"Notification held for {user_id} ({label}, quiet hours)")
+    for label in sorted(before - held - attempted):
+        logging.info(
+            f"Held notification for {user_id} ({label}) dropped unsent: "
+            f"no longer due"
+        )
+
+    if held:
+        _holding[user_id] = held
+    else:
+        _holding.pop(user_id, None)
+
+
+async def _record_sent(user_id: str, entries) -> None:
+    """Write down what was delivered, together with anything still owed.
+
+    The message is already in the chat when this runs, so a failed write must
+    not be forgotten: the next cycle would find no row and send it again.
+    """
+    pending = _unrecorded.pop(user_id, []) + list(entries)
+    if pending and not await record_sent_notifications(user_id, pending):
+        _unrecorded[user_id] = pending
+        logging.error(
+            f"Could not record {len(pending)} sent notifications for {user_id}; "
+            f"kept in memory until the database takes them"
+        )
+
+
+async def _process_user(user) -> tuple[bool, int]:
     """Check one user's assignments and send whatever is due.
 
-    Returns (success, notifications_sent, notifications_held). success is False
-    when the user's data could not be read at all - the caller only counts
-    those, so one broken account never aborts a cycle. Held is what quiet hours
-    kept back this cycle; the same message counts again in the next one, for as
-    long as it waits.
+    Returns (success, notifications_sent). success is False when the user's
+    data could not be read at all - the caller only counts those, so one
+    broken account never aborts a cycle.
     """
     user_id = user.user_id
+    # Outside the try: whatever went out before something broke was still sent.
+    sent_count = 0
 
     try:
         user_lang = await get_user_language(user_id) or Language.EN
         state = await get_notification_state(user_id)
         user_settings = await get_user_settings(user_id)
 
+        # First, whatever an earlier cycle delivered and could not write down.
+        await _record_sent(user_id, ())
+
         sent = await get_sent_notifications(user_id)
         if sent is None:
             # The database could not be read. Sending now would repeat
             # notifications this user already has, so skip the cycle instead.
             logging.warning(f"Could not read notification history for {user_id}")
-            return False, 0, 0
+            return False, 0
+
+        for key, kind in _unrecorded.get(user_id, ()):
+            sent.setdefault(key, set()).add(kind)
 
         async with KwangwoonUniversityApi() as kw:
             # An unchecked login was the most common way a cycle failed: the
@@ -306,7 +365,7 @@ async def _process_user(user) -> tuple[bool, int, int]:
             ):
                 logging.warning(f"Could not log in as user {user_id}")
                 await _handle_login_failure(user_id, state, user_lang)
-                return False, 0, 0
+                return False, 0
 
             await _clear_login_failures(user_id, state)
 
@@ -316,11 +375,12 @@ async def _process_user(user) -> tuple[bool, int, int]:
             # student genuinely has no subjects this semester.
             if todo_list is None:
                 logging.warning(f"Could not retrieve assignments for user {user_id}")
-                return False, 0, 0
+                return False, 0
 
             if not todo_list:
                 logging.debug(f"No subjects found for user {user_id}")
-                return True, 0, 0
+                _log_holds(user_id, set(), set())
+                return True, 0
 
             thresholds = (
                 enabled_thresholds(user_settings)
@@ -338,13 +398,13 @@ async def _process_user(user) -> tuple[bool, int, int]:
             quiet = in_quiet_hours(user_settings)
             wants_new = getattr(user_settings, "new_assignment_alerts", True)
 
-            sent_count = 0
-            held_count = 0
+            held = set()
+            attempted = set()
             seeded = bool(getattr(state, "seeded", False))
             if not seeded:
                 # First cycle for this user: remember what they already have so
                 # the whole semester's backlog is not announced as brand new.
-                await record_sent_notifications(user_id, new_entries)
+                await _record_sent(user_id, new_entries)
                 await update_notification_state(user_id, seeded=True)
                 logging.info(
                     f"Seeded {len(new_entries)} existing assignments for {user_id}"
@@ -352,51 +412,48 @@ async def _process_user(user) -> tuple[bool, int, int]:
             elif new_message and not wants_new:
                 # Switched off: record it so turning the setting back on does
                 # not announce everything that piled up in the meantime.
-                await record_sent_notifications(user_id, new_entries)
+                await _record_sent(user_id, new_entries)
             elif new_message and quiet:
                 # Held until the quiet hours are over; nothing is recorded, so
                 # the next daytime cycle picks it up.
-                logging.debug(f"Holding new assignments for {user_id} (quiet hours)")
-                held_count += 1
+                held.add("new assignments")
             elif new_message:
+                attempted.add("new assignments")
                 if await send_new_assignments(new_message, user_id, user_lang):
-                    await record_sent_notifications(user_id, new_entries)
+                    await _record_sent(user_id, new_entries)
                     sent_count += 1
                 await asyncio.sleep(SEND_DELAY_SECONDS)
 
             for threshold, message in threshold_messages.items():
                 if message and quiet and threshold not in QUIET_HOURS_EXEMPT:
-                    logging.debug(
-                        f"Holding the {threshold}h notification for {user_id} "
-                        f"(quiet hours)"
-                    )
-                    held_count += 1
+                    held.add(f"threshold={threshold}h")
                 elif message:
+                    attempted.add(f"threshold={threshold}h")
                     if await send_notification(message, user_id, threshold, user_lang):
-                        await record_sent_notifications(
-                            user_id, threshold_entries[threshold]
-                        )
+                        await _record_sent(user_id, threshold_entries[threshold])
                         sent_count += 1
                     await asyncio.sleep(SEND_DELAY_SECONDS)
+
+            _log_holds(user_id, held, attempted)
 
         # Forget assignments KLAS no longer lists: submitted, or long expired.
         await prune_sent_notifications(user_id, current_keys)
 
-        return True, sent_count, held_count
+        return True, sent_count
     except Exception as e:
-        logging.error(f"Error processing user {user_id}: {e}")
-        return False, 0, 0
+        logging.error(f"Error processing user {user_id}: {e}", exc_info=True)
+        return False, sent_count
 
 
-async def _process_user_limited(user, semaphore) -> tuple[bool, int, int]:
+async def _process_user_limited(user, semaphore) -> tuple[bool, int]:
     async with semaphore:
         return await _process_user(user)
 
 
-async def run_notification_cycle(users) -> tuple[int, int, int]:
+async def run_notification_cycle(users) -> tuple[int, int]:
     """Check every user, MAX_CONCURRENT_USERS at a time.
 
-    Returns (failed_users, notifications_sent, notifications_held).
+    Returns (failed_users, notifications_sent).
 
     Users used to be checked strictly one after another, so the cycle cost the
     sum of everyone's KLAS round trips — and a single user stuck in a retry
@@ -411,22 +468,20 @@ async def run_notification_cycle(users) -> tuple[int, int, int]:
 
     failed = 0
     sent = 0
-    held = 0
     for result in results:
         # _process_user handles its own errors, so an exception reaching here
         # means the task itself broke - count it rather than let it vanish.
         if isinstance(result, BaseException):
-            logging.error(f"User check task failed: {result!r}")
+            logging.error(f"User check task failed: {result!r}", exc_info=result)
             failed += 1
             continue
 
-        success, sent_count, held_count = result
+        success, sent_count = result
         sent += sent_count
-        held += held_count
         if not success:
             failed += 1
 
-    return failed, sent, held
+    return failed, sent
 
 
 async def check_todos():
@@ -436,20 +491,18 @@ async def check_todos():
             await asyncio.sleep(settings.NOTIFICATION_CHECK_INTERVAL)
 
             users = await get_all_users()
-            failed_users, sent_count, held_count = await run_notification_cycle(users)
+            failed_users, sent_count = await run_notification_cycle(users)
 
-            # Held is in the summary because nothing else shows it: a reminder
-            # waiting for the morning looked, in the logs, like no reminder.
-            outcome = f"{sent_count} notifications sent, {held_count} held (quiet hours)"
             if failed_users:
                 logging.warning(
                     f"Notification cycle finished: {len(users) - failed_users}"
-                    f"/{len(users)} users checked, {failed_users} failed, {outcome}"
+                    f"/{len(users)} users checked, {failed_users} failed, "
+                    f"{sent_count} notifications sent"
                 )
             else:
                 logging.info(
                     f"Notification cycle finished: all {len(users)} users checked, "
-                    f"{outcome}"
+                    f"{sent_count} notifications sent"
                 )
         except Exception as e:
-            logging.error(f"Error in check_todos: {e}")
+            logging.error(f"Error in check_todos: {e}", exc_info=True)

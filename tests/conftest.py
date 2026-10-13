@@ -1,3 +1,6 @@
+import os
+import time
+
 import pytest
 import pytest_asyncio
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
@@ -28,6 +31,28 @@ async def isolated_database(tmp_path, monkeypatch):
     yield engine
 
     await engine.dispose()
+
+
+@pytest.fixture
+def host_timezone():
+    """Move the *process* clock to another zone, the way a US host would.
+
+    app/config.py forces TZ=Asia/Seoul at import, so the test has to undo that
+    to reproduce what the deployment actually looks like.
+    """
+    original = os.environ.get("TZ")
+
+    def _set(name: str):
+        os.environ["TZ"] = name
+        time.tzset()
+
+    yield _set
+
+    if original is None:
+        del os.environ["TZ"]
+    else:
+        os.environ["TZ"] = original
+    time.tzset()
 
 
 @pytest_asyncio.fixture(scope="function")

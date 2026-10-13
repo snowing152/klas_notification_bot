@@ -1,12 +1,22 @@
 import asyncio
 import logging
+import os
+
+if __name__ == "__main__":
+    # Before anything else under app/ is imported: app/config.py raises at
+    # import when BOT_TOKEN, ADMIN_ID or DATA_DIR is wrong, and with logging set
+    # up only at the bottom of this file that traceback - the failure a deploy
+    # is most likely to hit - reached Railway as unlabelled lines of stderr.
+    from app.utils.log_format import configure_logging
+
+    configure_logging(os.path.join(os.path.dirname(os.path.abspath(__file__)), "logs"))
+
 from app.bot import dp, bot, setup_handlers
 from app.database.database import init_db
 from app.services.announcements import announce_pending
 from app.services.notifications import start_notification_service
 from app.services.qr import close_session as close_qr_session
 from app.menu import initialize_bot_menu
-from app.utils.log_format import KoreanTimeFormatter, RailwayFormatter
 
 
 async def main():
@@ -44,11 +54,14 @@ async def main():
 
         for task in done:
             if task.exception():
-                logging.error(f"Error in main loop: {task.exception()}")
+                logging.error(
+                    f"Error in main loop: {task.exception()}",
+                    exc_info=task.exception(),
+                )
     except Exception as e:
         # Re-raised so the process exits non-zero: swallowing it here would let a
         # failed start look like a clean shutdown, and the ON_FAILURE restart
-        # policy would never kick in.
+        # policy would never kick in. The traceback follows from the excepthook.
         logging.error(f"Error in main loop: {e}")
         raise
     finally:
@@ -57,35 +70,6 @@ async def main():
 
 
 if __name__ == "__main__":
-    import os
-    import sys
-    import platform
-
-    # Configure logging first. stdout is always a handler: a PaaS such as Railway
-    # collects logs from the process output, and logging only to a file inside an
-    # ephemeral container means the dashboard shows nothing and the file is lost
-    # on the next deploy.
-    handlers = [logging.StreamHandler(sys.stdout)]
-
-    # Keep the on-disk log for self-hosted (systemd) runs, where it survives.
-    on_railway = bool(os.getenv("RAILWAY_ENVIRONMENT"))
-    if platform.system() == "Linux" and not on_railway:
-        log_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "logs")
-        os.makedirs(log_dir, exist_ok=True)
-        handlers.append(
-            logging.FileHandler(
-                os.path.join(log_dir, "kwbot.log"), mode="a", encoding="UTF-8"
-            )
-        )
-
-    # One formatter for every handler: the file handler only exists off Railway,
-    # so the on-disk log stays plain text.
-    formatter = RailwayFormatter() if on_railway else KoreanTimeFormatter()
-    for handler in handlers:
-        handler.setFormatter(formatter)
-
-    logging.basicConfig(level=logging.INFO, handlers=handlers)
-
     logging.info("Starting bot...")
     asyncio.run(main())
     logging.info("Program finished!")
