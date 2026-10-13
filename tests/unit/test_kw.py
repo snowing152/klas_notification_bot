@@ -714,6 +714,30 @@ async def test_get_todo_list_logs_every_failure_and_its_subject(
     assert "while reading subject MALFORMED" in caplog.text
 
 
+async def test_a_failure_is_logged_without_the_session_cookie(
+    monkeypatch, fixed_now, caplog
+):
+    """aiohttp's response errors carry the request they answered, and their
+    repr prints its headers - the Cookie header being a live KLAS session that
+    whoever reads the logs could log in with."""
+    request_info = aiohttp.RequestInfo(
+        URL(URL_UNDER_TEST),
+        "POST",
+        CIMultiDictProxy(CIMultiDict({"Cookie": "JSESSIONID=live-session"})),
+        URL(URL_UNDER_TEST),
+    )
+    api = _todo_api(monkeypatch, "SUBJ")
+
+    async def lectures(subject_id, year):
+        raise aiohttp.TooManyRedirects(request_info, ())
+
+    monkeypatch.setattr(api, "_get_lectures", lectures)
+
+    assert await api.get_todo_list() is None
+    assert "TooManyRedirects" in caplog.messages[-1]
+    assert "live-session" not in caplog.text
+
+
 class CountingSession:
     """Answers every request, and remembers how many were open at once."""
 
