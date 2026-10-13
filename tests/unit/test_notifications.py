@@ -54,6 +54,13 @@ class FakeBot:
         self.sent.append((chat_id, text))
 
 
+@pytest.fixture(autouse=True)
+def fresh_cycle_memory():
+    """What the notification loop keeps between cycles is module state."""
+    notifications._holding.clear()
+    notifications._unrecorded.clear()
+
+
 def at_hour(hour):
     """What FakeClock(hour) reads - the base a fixture's deadlines are set from."""
     return datetime.datetime(2026, 9, 20, hour, 0)
@@ -109,12 +116,12 @@ async def test_cycle_checks_every_user(monkeypatch):
 
     async def record(user):
         checked.append(user.user_id)
-        return True, 0, 0
+        return True, 0
 
     monkeypatch.setattr(notifications, "_process_user", record)
     users = [FakeUser("1"), FakeUser("2"), FakeUser("3")]
 
-    assert await notifications.run_notification_cycle(users) == (0, 0, 0)
+    assert await notifications.run_notification_cycle(users) == (0, 0)
     assert sorted(checked) == ["1", "2", "3"]
 
 
@@ -130,24 +137,24 @@ async def test_cycle_runs_users_concurrently_but_bounded(monkeypatch):
         peak = max(peak, in_flight)
         await asyncio.sleep(0.01)
         in_flight -= 1
-        return True, 0, 0
+        return True, 0
 
     monkeypatch.setattr(notifications, "_process_user", slow_check)
     users = [FakeUser(str(i)) for i in range(12)]
 
-    assert await notifications.run_notification_cycle(users) == (0, 0, 0)
+    assert await notifications.run_notification_cycle(users) == (0, 0)
     assert peak > 1, "the cycle is still sequential"
     assert peak <= notifications.MAX_CONCURRENT_USERS, "KLAS must not be fanned out to"
 
 
 async def test_cycle_counts_failed_users(monkeypatch):
     async def fail_the_second(user):
-        return user.user_id != "2", 0, 0
+        return user.user_id != "2", 0
 
     monkeypatch.setattr(notifications, "_process_user", fail_the_second)
     users = [FakeUser("1"), FakeUser("2"), FakeUser("3")]
 
-    assert await notifications.run_notification_cycle(users) == (1, 0, 0)
+    assert await notifications.run_notification_cycle(users) == (1, 0)
 
 
 async def test_cycle_sums_notifications_sent_across_users(monkeypatch):
@@ -155,64 +162,124 @@ async def test_cycle_sums_notifications_sent_across_users(monkeypatch):
     core feature - sending a notification - fired even once."""
 
     async def send_some(user):
-        return True, int(user.user_id), 0
+        return True, int(user.user_id)
 
     monkeypatch.setattr(notifications, "_process_user", send_some)
     users = [FakeUser("1"), FakeUser("2"), FakeUser("3")]
 
-    assert await notifications.run_notification_cycle(users) == (0, 1 + 2 + 3, 0)
+    assert await notifications.run_notification_cycle(users) == (0, 1 + 2 + 3)
 
 
-async def test_cycle_sums_what_quiet_hours_held_across_users(monkeypatch):
-    async def hold_some(user):
-        return True, 0, int(user.user_id)
-
-    monkeypatch.setattr(notifications, "_process_user", hold_some)
-    users = [FakeUser("1"), FakeUser("2"), FakeUser("3")]
-
-    assert await notifications.run_notification_cycle(users) == (0, 0, 1 + 2 + 3)
+def _hold_lines(caplog) -> list:
+    return [
+        record.getMessage()
+        for record in caplog.records
+        if "held" in record.getMessage().lower()
+    ]
 
 
-async def test_process_user_counts_a_held_reminder_until_it_is_sent(monkeypatch):
-    """Held, then delivered: the count is what is waiting right now, so the
-    same reminder is counted on every cycle of the night and not after it."""
+async def test_a_hold_is_logged_once_however_long_the_night_is(monkeypatch, caplog):
+    """A hold is checked again on every cycle until morning. Counted per cycle,
+    one reminder read as fourteen, and no line named the user or the reminder."""
+    caplog.set_level(logging.INFO)
+    await _threshold_only_user()
+    api = FakeApi(login_result={"JSESSIONID": "x"}, todo_list=make_todo(hours=20, hour=3))
+
+    for hour in (3, 4, 5):
+        _patch_user_deps(monkeypatch, api, hour=hour)
+        await notifications._process_user(FakeUser("1"))
+
+    assert _hold_lines(caplog) == [
+        "Notification held for 1 (threshold=24h, quiet hours)"
+    ]
+
+    bot = _patch_user_deps(monkeypatch, api, hour=9)
+    await notifications._process_user(FakeUser("1"))
+
+    assert len(bot.sent) == 1
+    assert "Notification sent to 1 (threshold=24h)" in caplog.text
+    assert len(_hold_lines(caplog)) == 1, "a delivered reminder was reported dropped"
+
+
+async def test_a_held_reminder_that_is_never_sent_says_so(monkeypatch, caplog):
+    """Only the tightest threshold a deadline fits in is kept, so with a 07:00
+    deadline the 6h and 3h reminders are held and then simply gone. The logs
+    used to call both "held", as if they were waiting for the morning."""
+    caplog.set_level(logging.INFO)
+    await _threshold_only_user()
+    api = FakeApi(login_result={"JSESSIONID": "x"}, todo_list=make_todo(hours=6, hour=1))
+
+    for hour in (1, 4, 5):
+        bot = _patch_user_deps(monkeypatch, api, hour=hour)
+        await notifications._process_user(FakeUser("1"))
+
+    assert _hold_lines(caplog) == [
+        "Notification held for 1 (threshold=6h, quiet hours)",
+        "Notification held for 1 (threshold=3h, quiet hours)",
+        "Held notification for 1 (threshold=6h) dropped unsent: no longer due",
+        "Held notification for 1 (threshold=3h) dropped unsent: no longer due",
+    ]
+    assert len(bot.sent) == 1, "the 2h reminder is exempt from quiet hours"
+    assert _thresholds_recorded(await get_sent_notifications("1")) == {"t2"}
+
+
+async def test_a_reminder_telegram_refused_is_not_reported_dropped(monkeypatch, caplog):
+    """Held overnight, then the morning send fails: that is an error with its
+    own line and a retry next cycle, not a reminder that stopped being due."""
+    caplog.set_level(logging.INFO)
     await _threshold_only_user()
     api = FakeApi(login_result={"JSESSIONID": "x"}, todo_list=make_todo(hours=20, hour=3))
     _patch_user_deps(monkeypatch, api, hour=3)
+    await notifications._process_user(FakeUser("1"))
 
-    assert await notifications._process_user(FakeUser("1")) == (True, 0, 1)
-    assert await notifications._process_user(FakeUser("1")) == (True, 0, 1)
+    _patch_user_deps(monkeypatch, api, bot=FakeBot(fail=True), hour=9)
+    await notifications._process_user(FakeUser("1"))
 
-    _patch_user_deps(monkeypatch, api, hour=9)
-    assert await notifications._process_user(FakeUser("1")) == (True, 1, 0)
+    assert "Error sending notification to 1" in caplog.text
+    assert not any("dropped" in line for line in _hold_lines(caplog))
 
 
-async def test_cycle_summary_says_how_much_quiet_hours_held(monkeypatch, caplog):
-    """Regression: 35 day-ahead reminders in one week waited until morning and
-    the logs showed only cycles that had sent nothing."""
-    cycles = 0
+async def test_a_sent_reminder_the_database_refused_is_not_sent_again(monkeypatch, caplog):
+    """The message is in the chat before the row is written. When the write
+    failed nothing remembered the send, and the same reminder went out again
+    every 30 minutes for as long as the database stayed locked."""
+    await _threshold_only_user()
+    api = FakeApi(login_result={"JSESSIONID": "x"}, todo_list=make_todo(hours=20))
+    bot = _patch_user_deps(monkeypatch, api)
+    real_record = notifications.record_sent_notifications
 
-    async def one_cycle_then_stop(users):
-        nonlocal cycles
-        cycles += 1
-        if cycles > 1:
-            raise asyncio.CancelledError
-        return 0, 3, 5
+    async def database_is_locked(user_id, entries):
+        return False
 
-    async def two_users():
-        return [FakeUser("1"), FakeUser("2")]
+    monkeypatch.setattr(notifications, "record_sent_notifications", database_is_locked)
+    assert await notifications._process_user(FakeUser("1")) == (True, 1)
+    assert await notifications._process_user(FakeUser("1")) == (True, 0)
+    assert len(bot.sent) == 1, "the reminder was repeated"
+    assert "Could not record 1 sent notifications for 1" in caplog.text
 
-    monkeypatch.setattr(notifications.settings, "NOTIFICATION_CHECK_INTERVAL", 0)
-    monkeypatch.setattr(notifications, "get_all_users", two_users)
-    monkeypatch.setattr(notifications, "run_notification_cycle", one_cycle_then_stop)
-    caplog.set_level(logging.INFO)
-
-    with pytest.raises(asyncio.CancelledError):
-        await notifications.check_todos()
-
-    assert (
-        "all 2 users checked, 3 notifications sent, 5 held (quiet hours)" in caplog.text
+    monkeypatch.setattr(notifications, "record_sent_notifications", real_record)
+    assert await notifications._process_user(FakeUser("1")) == (True, 0)
+    assert _thresholds_recorded(await get_sent_notifications("1")) == {"t24"}, (
+        "the row was never written once the database came back"
     )
+    assert notifications._unrecorded == {}
+
+
+async def test_what_was_sent_is_counted_even_when_the_check_then_breaks(monkeypatch):
+    """The catch-all used to answer "nothing sent" for a cycle that had sent."""
+    await _threshold_only_user()
+    bot = _patch_user_deps(
+        monkeypatch,
+        FakeApi(login_result={"JSESSIONID": "x"}, todo_list=make_todo(hours=20)),
+    )
+
+    async def broken_prune(user_id, current_keys):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(notifications, "prune_sent_notifications", broken_prune)
+
+    assert await notifications._process_user(FakeUser("1")) == (False, 1)
+    assert len(bot.sent) == 1
 
 
 async def test_one_crashing_user_does_not_abort_the_cycle(monkeypatch):
@@ -222,24 +289,24 @@ async def test_one_crashing_user_does_not_abort_the_cycle(monkeypatch):
         if user.user_id == "2":
             raise RuntimeError("boom")
         checked.append(user.user_id)
-        return True, 0, 0
+        return True, 0
 
     monkeypatch.setattr(notifications, "_process_user", crash_the_second)
     users = [FakeUser("1"), FakeUser("2"), FakeUser("3")]
 
-    assert await notifications.run_notification_cycle(users) == (1, 0, 0)
+    assert await notifications.run_notification_cycle(users) == (1, 0)
     assert sorted(checked) == ["1", "3"], "the other users still get checked"
 
 
 async def test_cycle_with_no_users_reports_no_failures(monkeypatch):
-    assert await notifications.run_notification_cycle([]) == (0, 0, 0)
+    assert await notifications.run_notification_cycle([]) == (0, 0)
 
 
 async def test_process_user_reports_failure_when_login_fails(monkeypatch):
     """A failed login is the user's cycle failing, not 'no assignments'."""
     _patch_user_deps(monkeypatch, FakeApi(login_result=None))
 
-    assert await notifications._process_user(FakeUser("1")) == (False, 0, 0)
+    assert await notifications._process_user(FakeUser("1")) == (False, 0)
 
 
 async def test_process_user_reports_failure_when_klas_cannot_be_read(monkeypatch):
@@ -247,7 +314,7 @@ async def test_process_user_reports_failure_when_klas_cannot_be_read(monkeypatch
         monkeypatch, FakeApi(login_result={"JSESSIONID": "x"}, todo_list=None)
     )
 
-    assert await notifications._process_user(FakeUser("1")) == (False, 0, 0)
+    assert await notifications._process_user(FakeUser("1")) == (False, 0)
 
 
 async def test_process_user_succeeds_with_no_subjects(monkeypatch):
@@ -256,7 +323,7 @@ async def test_process_user_succeeds_with_no_subjects(monkeypatch):
         monkeypatch, FakeApi(login_result={"JSESSIONID": "x"}, todo_list=[])
     )
 
-    assert await notifications._process_user(FakeUser("1")) == (True, 0, 0)
+    assert await notifications._process_user(FakeUser("1")) == (True, 0)
 
 
 async def test_first_cycle_records_existing_work_without_announcing_it(monkeypatch):
@@ -266,7 +333,7 @@ async def test_first_cycle_records_existing_work_without_announcing_it(monkeypat
         FakeApi(login_result={"JSESSIONID": "x"}, todo_list=make_todo(hours=100)),
     )
 
-    assert await notifications._process_user(FakeUser("1")) == (True, 0, 0)
+    assert await notifications._process_user(FakeUser("1")) == (True, 0)
 
     assert bot.sent == []
     state = await get_notification_state("1")

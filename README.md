@@ -360,7 +360,8 @@ skipped on Railway, where the file would be lost on the next deploy anyway.
 
 The time on every line is Korean local time, whatever the host clock is. On Railway
 each line is written as a JSON object, so the dashboard can filter by severity
-(`@level:error`); elsewhere it is plain text.
+(`@level:error`); elsewhere — including `railway run` in a local terminal — it is plain
+text.
 
 ### 💾 What to carry across a redeploy
 
