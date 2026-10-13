@@ -519,8 +519,11 @@ class KwangwoonUniversityApi:
             expire_date_time = expire_date_time.replace(tzinfo=None)
         return expire_date_time
 
-    async def _get_subject_todo(self, subject_id: str, year: str) -> Dict:
-        """One subject's unfinished work, filed by category."""
+    async def _get_subject_todo(
+        self, subject_id: str, year: str
+    ) -> tuple[Dict, bool]:
+        """One subject's unfinished work, filed by category, and whether any
+        category is missing because KLAS refused the request for it."""
         try:
             async with asyncio.TaskGroup() as group:
                 requests = [
@@ -537,14 +540,23 @@ class KwangwoonUniversityApi:
                 request.result() for request in requests
             )
 
-            if None in (lectures, homeworks, team_projects, quizzes, discussions):
+            incomplete = None in (
+                lectures,
+                homeworks,
+                team_projects,
+                quizzes,
+                discussions,
+            )
+            if incomplete:
                 # One rejected request should cost this subject's missing
-                # category, not the whole user's todo list.
+                # category, not the whole user's todo list. The caller is told
+                # all the same: an empty category is otherwise exactly what
+                # "everything handed in" looks like.
                 logging.warning(
                     f"Incomplete assignment data for subject {subject_id}"
                 )
 
-            return {
+            todo = {
                 "lectures": self._get_not_done_lectures_info(lectures or []),
                 "homeworks": self._get_not_done_homeworks_info(homeworks or []),
                 "team_projects": self._get_not_done_team_projects_info(
@@ -555,6 +567,7 @@ class KwangwoonUniversityApi:
                     discussions or [], subject_id, year
                 ),
             }
+            return todo, incomplete
         except Exception as e:
             # The traceback get_todo_list() logs is the only place a failure
             # in a parser, which names no URL, can say which subject it was.
@@ -570,7 +583,12 @@ class KwangwoonUniversityApi:
             return None
 
         todo_list = [
-            {"id": subject.get("value"), "name": subject.get("name"), "todo": {}}
+            {
+                "id": subject.get("value"),
+                "name": subject.get("name"),
+                "todo": {},
+                "incomplete": False,
+            }
             for subject in subjects.get("subjList")
         ]
 
@@ -590,7 +608,7 @@ class KwangwoonUniversityApi:
                     for todo in todo_list
                 ]
             for todo, task in zip(todo_list, tasks):
-                todo["todo"] = task.result()
+                todo["todo"], todo["incomplete"] = task.result()
 
             return todo_list
 

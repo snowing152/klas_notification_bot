@@ -49,9 +49,11 @@ What the return values mean:
 `_post_json` treats a 200 with an empty body as "no data": KLAS answers that way for
 records a student does not have yet, a first-semester student asking for grades for
 instance. One rejected request inside `get_todo_list()` costs that subject's category and
-an `Incomplete assignment data for subject ...` warning, not the whole list — which the
-notification cycle then misreads, see
-[KNOWN_ISSUES.md](KNOWN_ISSUES.md#a-request-klas-rejects-reads-as-no-assignments).
+an `Incomplete assignment data for subject ...` warning, not the whole list. The subject
+is then returned with `"incomplete": True`, because its empty category is otherwise
+exactly what "everything handed in" looks like: the notification cycle keeps its history
+instead of pruning it ([NOTIFICATIONS.md](NOTIFICATIONS.md)), and `/show` does not cache
+the list. Anything new that acts on work being *absent* has to read the flag too.
 
 ## Endpoints in use
 

@@ -599,6 +599,28 @@ async def test_get_todo_list_keeps_each_answer_with_its_subject(monkeypatch, fix
     } == {"SLOW": ["토론 for SLOW"], "FAST": ["토론 for FAST"]}
 
 
+async def test_get_todo_list_marks_the_subject_klas_refused_a_category_for(
+    monkeypatch, fixed_now
+):
+    """A refused request and a finished category are both an empty list by the
+    time they leave here. The flag is the only thing that tells the callers
+    apart "nothing to do" and "could not ask"."""
+    api = _todo_api(monkeypatch, "REFUSED", "FINE")
+
+    async def homeworks(subject_id, year):
+        return None if subject_id == "REFUSED" else []
+
+    monkeypatch.setattr(api, "_get_homeworks", homeworks)
+
+    todo_list = await api.get_todo_list()
+
+    assert {subject["id"]: subject["incomplete"] for subject in todo_list} == {
+        "REFUSED": True,
+        "FINE": False,
+    }
+    assert todo_list[0]["todo"]["homeworks"] == []
+
+
 def _hanging(cancelled, label):
     """A request that never answers, and reports being cancelled."""
 

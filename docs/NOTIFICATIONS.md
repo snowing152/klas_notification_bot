@@ -25,7 +25,10 @@ One cycle, per user (`_process_user`):
 2. Log into KLAS. A failure counts towards the password warning below and ends the
    user's cycle.
 3. `get_todo_list()`. `None` means KLAS could not be read (a failed user); `[]` means no
-   subjects, which is a success with nothing to do.
+   subjects, which is a success with nothing to do. A subject marked `incomplete` had a
+   category KLAS refused ([KLAS.md](KLAS.md#the-client)): the cycle goes on with what was
+   read, except for a user not seeded yet, who is left for the next cycle as a failed
+   one — seeding from part of the picture would announce the rest as new.
 4. `_collect_messages` builds what is due against a single `timezone.now()`
    ([TIMEZONE.md](TIMEZONE.md)): one "new" body per assignment not yet announced, and for
    each assignment **only the tightest threshold its deadline still fits in**. At 2h30m
@@ -33,7 +36,9 @@ One cycle, per user (`_process_user`):
    already past their deadline are skipped even though KLAS still lists them.
 5. Send, one message per kind — new assignments first, then one per threshold — with
    `SEND_DELAY_SECONDS = 1` between them.
-6. Prune `sent_notifications` rows for assignments KLAS no longer lists.
+6. Prune `sent_notifications` rows for assignments KLAS no longer lists — unless the
+   read was incomplete, when a missing assignment may only be one KLAS did not answer
+   about. The log then has `Kept the notification history of <user id> as it is`.
 
 Users are processed `MAX_CONCURRENT_USERS = 5` at a time. That is deliberately small:
 KLAS drops connections under light load already, and one user is itself several requests.

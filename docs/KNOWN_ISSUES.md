@@ -147,19 +147,18 @@ covered by [Voice and other media are refused](#voice-and-other-media-are-refuse
 - **Where:** `_collect_messages`, `_log_holds` and `QUIET_HOURS_EXEMPT` in
   `app/services/notifications.py`.
 
-### A request KLAS rejects reads as "no assignments"
+### `/show` does not say when its list is incomplete
 
-- **Symptom:** an assignment is announced as new a second time and its reminders repeat;
-  or `/show` lacks a category for up to five minutes. The log has `Incomplete assignment
-  data for subject ...` shortly before.
-- **Cause:** a list request answered with an error status or a non-JSON body is not
-  retried and becomes an empty category, and `get_todo_list()` still succeeds. The cycle
-  then prunes `sent_notifications` for everything "no longer listed", so the next
-  complete read looks new. `/show` caches the short list like any other.
-- **Workaround:** none. The fix is to skip pruning (and caching) when any category came
-  back `None`, which needs `get_todo_list()` to say so.
-- **Where:** `_get_subject_todo` in `app/services/kw.py`; `_process_user` and
-  `prune_sent_notifications`; `_load_items` in `app/handlers/todos.py`.
+- **Symptom:** a `/show` now and then lacks a whole category for one subject and says
+  nothing about it; asking again shows it. The log has `Incomplete assignment data for
+  subject ...` at that moment.
+- **Cause:** a list request KLAS answered with an error status or a non-JSON body is not
+  retried and becomes an empty category. The list is marked incomplete, which keeps it
+  out of the cache and keeps the notification cycle from pruning on it, but the handler
+  has no text to tell the user with.
+- **Workaround:** send `/show` again.
+- **Where:** `_load_items` and `show_all_assignments` in `app/handlers/todos.py`; the
+  flag is set in `_get_subject_todo` in `app/services/kw.py`.
 
 ### An assignment is identified by its title
 

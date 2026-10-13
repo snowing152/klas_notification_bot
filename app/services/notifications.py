@@ -384,6 +384,21 @@ async def _process_user(user) -> tuple[bool, int]:
                 _log_holds(user_id, set(), set())
                 return True, 0
 
+            # A category KLAS refused arrives as an empty one, which is also
+            # what "all of it handed in" looks like. What was read is still
+            # worth reminding about; what must not happen is acting on the
+            # absence of the rest.
+            incomplete = any(subject.get("incomplete") for subject in todo_list)
+            seeded = bool(getattr(state, "seeded", False))
+            if incomplete and not seeded:
+                # Seeding from part of the picture would leave the rest to be
+                # announced as brand new on the next cycle.
+                logging.warning(
+                    f"Incomplete assignment data for user {user_id}; "
+                    f"not seeding from it"
+                )
+                return False, 0
+
             thresholds = (
                 enabled_thresholds(user_settings)
                 if getattr(user_settings, "deadline_alerts", True)
@@ -402,7 +417,6 @@ async def _process_user(user) -> tuple[bool, int]:
 
             held = set()
             attempted = set()
-            seeded = bool(getattr(state, "seeded", False))
             if not seeded:
                 # First cycle for this user: remember what they already have so
                 # the whole semester's backlog is not announced as brand new.
@@ -439,7 +453,15 @@ async def _process_user(user) -> tuple[bool, int]:
             _log_holds(user_id, held, attempted)
 
         # Forget assignments KLAS no longer lists: submitted, or long expired.
-        await prune_sent_notifications(user_id, current_keys)
+        # Not after a partial read: work in a category KLAS refused would lose
+        # its rows and be announced, and reminded about, all over again.
+        if incomplete:
+            logging.info(
+                f"Kept the notification history of {user_id} as it is: "
+                f"KLAS answered incompletely"
+            )
+        else:
+            await prune_sent_notifications(user_id, current_keys)
 
         return True, sent_count
     except Exception as e:
