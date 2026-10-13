@@ -42,6 +42,17 @@ covered by [Voice and other media are refused](#voice-and-other-media-are-refuse
 - **Workaround:** change `MODEL` to a current one and redeploy.
 - **Where:** `app/services/llm.py`.
 
+### A stalled KLAS endpoint holds the request slots
+
+- **Symptom:** while KLAS accepts connections but does not answer, `/show` waits about a
+  minute and a half before reporting a failed login, and a notification cycle gets
+  through its users a few at a time instead of five.
+- **Cause:** a request keeps its slot of `MAX_CONCURRENT_REQUESTS` through all three
+  attempts, 30 seconds each, and the slots are shared by the whole process.
+- **Workaround:** none; it clears when KLAS answers again, and nothing is sent wrongly
+  in the meantime.
+- **Where:** `_post_json` and `_request_with_retries` in `app/services/kw.py`.
+
 ## Conversation state
 
 ### A restart loses a registration in progress
@@ -135,6 +146,19 @@ covered by [Voice and other media are refused](#voice-and-other-media-are-refuse
   reason.
 - **Where:** `_collect_messages`, `_log_holds` and `QUIET_HOURS_EXEMPT` in
   `app/services/notifications.py`.
+
+### `/show` does not say when its list is incomplete
+
+- **Symptom:** a `/show` now and then lacks a whole category for one subject and says
+  nothing about it; asking again shows it. The log has `Incomplete assignment data for
+  subject ...` at that moment.
+- **Cause:** a list request KLAS answered with an error status or a non-JSON body is not
+  retried and becomes an empty category. The list is marked incomplete, which keeps it
+  out of the cache and keeps the notification cycle from pruning on it, but the handler
+  has no text to tell the user with.
+- **Workaround:** send `/show` again.
+- **Where:** `_load_items` and `show_all_assignments` in `app/handlers/todos.py`; the
+  flag is set in `_get_subject_todo` in `app/services/kw.py`.
 
 ### An assignment is identified by its title
 

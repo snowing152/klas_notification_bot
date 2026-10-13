@@ -433,6 +433,61 @@ async def test_finished_assignments_are_forgotten(monkeypatch):
     assert await get_sent_notifications("1") == {}
 
 
+def _refused(todo_list):
+    """The same read with KLAS having refused a category of the first subject."""
+    return [{**todo_list[0], "incomplete": True}] + todo_list[1:]
+
+
+async def test_a_partial_read_does_not_forget_what_was_sent(monkeypatch):
+    """KLAS refusing one request used to look like the work being handed in:
+    its rows were pruned, and the next full read announced it as new and sent
+    its reminders again."""
+    api = FakeApi(login_result={"JSESSIONID": "x"}, todo_list=make_todo(hours=100))
+    bot = _patch_user_deps(monkeypatch, api)
+    await notifications._process_user(FakeUser("1"))  # seeding cycle
+    history = await get_sent_notifications("1")
+
+    api._todo_list = _refused([{"name": "Algorithms", "todo": {"homeworks": []}}])
+    assert await notifications._process_user(FakeUser("1")) == (True, 0)
+    assert await get_sent_notifications("1") == history
+
+    api._todo_list = make_todo(hours=100)
+    await notifications._process_user(FakeUser("1"))
+    assert bot.sent == [], "known work came back as new after a partial read"
+
+
+async def test_a_partial_read_still_sends_what_it_did_read(monkeypatch):
+    await update_notification_state("1", seeded=True)
+    bot = _patch_user_deps(
+        monkeypatch,
+        FakeApi(
+            login_result={"JSESSIONID": "x"},
+            todo_list=_refused(make_todo(hours=2.5)),
+        ),
+    )
+
+    assert await notifications._process_user(FakeUser("1")) == (True, 2)
+    assert len(bot.sent) == 2, "the new assignment and its 3h reminder"
+
+
+async def test_the_first_cycle_does_not_seed_from_a_partial_read(monkeypatch):
+    """Seeding records what exists so that it is never announced. Seeded from
+    a read with a category missing, that category arrives as new one cycle
+    later - the dump of a semester seeding exists to prevent."""
+    api = FakeApi(
+        login_result={"JSESSIONID": "x"}, todo_list=_refused(make_todo(hours=100))
+    )
+    bot = _patch_user_deps(monkeypatch, api)
+
+    assert await notifications._process_user(FakeUser("1")) == (False, 0)
+    assert not getattr(await get_notification_state("1"), "seeded", False)
+
+    api._todo_list = make_todo(hours=100)
+    assert await notifications._process_user(FakeUser("1")) == (True, 0)
+    assert bot.sent == []
+    assert (await get_notification_state("1")).seeded is True
+
+
 async def test_repeated_login_failures_warn_the_user_once(monkeypatch):
     """KW forces a password change every few months; the bot used to just go
     quiet and the student never learned why."""

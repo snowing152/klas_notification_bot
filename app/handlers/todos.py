@@ -29,8 +29,8 @@ TYPE_EMOJIS = {
     "discussions": "💬",
 }
 
-# get_todo_list() logs in and issues a gather() of 5 requests per subject, so
-# a filter tap re-running it would feel like a hang. Cache the flattened,
+# get_todo_list() logs in and makes five requests per subject, so a filter
+# tap re-running it would feel like a hang. Cache the flattened,
 # already-sorted list per user for a few minutes instead.
 CACHE_TTL_SECONDS = 300
 _items_cache: dict[str, tuple[float, list[dict]]] = {}
@@ -93,7 +93,11 @@ async def _load_items(user_id: str) -> tuple[str, list[dict] | None]:
         return "login_failed", None
 
     items = _flatten_and_sort(todo_list)
-    _items_cache[user_id] = (time.monotonic(), items)
+    # A list missing a category KLAS refused is shown, since it is all there
+    # is, but not kept: the next /show should ask again rather than repeat the
+    # gap for five minutes.
+    if not any(subject.get("incomplete") for subject in todo_list):
+        _items_cache[user_id] = (time.monotonic(), items)
     return "ok", items
 
 

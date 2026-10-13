@@ -224,6 +224,23 @@ async def test_a_second_show_within_the_cache_window_does_not_hit_klas_again():
 
 
 @pytest.mark.asyncio
+async def test_a_list_klas_answered_incompletely_is_shown_but_not_cached():
+    """Cached, the gap would be repeated to the user for five minutes, when
+    asking again a moment later usually fills it."""
+    await _register("708")
+    subject = make_subject("Algorithms", [("lectures", "Week 3", 10)])
+    api = FakeApi(todo_list=[{**subject, "incomplete": True}])
+    message = make_message(user_id="708")
+
+    with mock.patch.object(todos, "KwangwoonUniversityApi", lambda: api):
+        await show_all_assignments(message)
+        await show_all_assignments(make_message(user_id="708"))
+
+    assert "Week 3" in message.answer.call_args.args[0]
+    assert api.calls["todo"] == 2
+
+
+@pytest.mark.asyncio
 async def test_deleting_a_users_data_drops_their_cached_assignments():
     """The cache is consulted before the database, so a user who deleted
     everything would otherwise keep being shown their assignments from

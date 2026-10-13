@@ -63,6 +63,10 @@ More of the same kind:
   afterwards.
 - Module-level caches (`todos._items_cache`, the news and food caches) outlive a test
   unless the test clears them.
+- `kw._request_slots` is module-level too, and an `asyncio.Semaphore` that ever made a
+  caller wait is bound to that test's event loop. `tests/unit/test_kw.py` replaces it
+  per test with an autouse fixture; a test elsewhere that drives the real `_post_json`
+  concurrently needs the same.
 - `tests/unit/test_strings.py` enforces the three-language rules
   ([LOCALIZATION.md](LOCALIZATION.md)).
 

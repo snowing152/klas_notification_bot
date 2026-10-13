@@ -18,6 +18,26 @@ errors and timeouts only, and each request has a total timeout of
 `REQUEST_TIMEOUT_SECONDS = 30`. Without it one hung request stalls the notification cycle
 for every remaining user. Every retried call is an idempotent read.
 
+`get_todo_list()` asks about every subject at once — one task per subject, five
+requests in each — because the wait is round trips to Korea and, taken in turn, every
+subject added one more. What keeps that from being a burst is `_request_slots`: a single
+module-level semaphore, `MAX_CONCURRENT_REQUESTS = 10`, that every `_post_json` call of
+every instance goes through. It is per process on purpose: KLAS sees one address whoever
+the request is for, and the notification cycle reads several users at a time. A request
+keeps its slot while it retries. Login is not counted; its three requests run one after
+another.
+
+The requests run in `asyncio.TaskGroup`s, not `gather()`: one that fails for good cancels
+everything else still in flight for that user, so nothing is left running against a
+session the caller is about to close. The error then logged lists every failure in the
+group, and its traceback says which subject each belonged to.
+
+Reading subjects concurrently is safe because KLAS answers from the request body, not
+from a "selected subject" kept in the session, even though every body carries
+`selectChangeYn: "Y"`. Checked on 2026-10-13: 150 requests for six subjects interleaved
+on one session matched the answers taken one at a time. If a category ever shows up
+under the wrong subject, this is the first thing to check again.
+
 What the return values mean:
 
 | Call | `None` | Empty |
@@ -29,7 +49,11 @@ What the return values mean:
 `_post_json` treats a 200 with an empty body as "no data": KLAS answers that way for
 records a student does not have yet, a first-semester student asking for grades for
 instance. One rejected request inside `get_todo_list()` costs that subject's category and
-an `Incomplete assignment data for subject ...` warning, not the whole list.
+an `Incomplete assignment data for subject ...` warning, not the whole list. The subject
+is then returned with `"incomplete": True`, because its empty category is otherwise
+exactly what "everything handed in" looks like: the notification cycle keeps its history
+instead of pruning it ([NOTIFICATIONS.md](NOTIFICATIONS.md)), and `/show` does not cache
+the list. Anything new that acts on work being *absent* has to read the flag too.
 
 ## Endpoints in use
 
@@ -76,7 +100,7 @@ countdown is in [TIMEZONE.md](TIMEZONE.md).
 Adding a category therefore touches, in order:
 
 1. a `_get_<name>` request and a `_get_not_done_<name>_info` parser in `kw.py`, and the
-   `asyncio.gather` and `todo["todo"]` dict in `get_todo_list()`;
+   list of fetches and the returned dict in `_get_subject_todo()`;
 2. `TYPE_EMOJIS` in `app/handlers/todos.py`, and `ASSIGNMENT_TYPES` there unless it is
    something to watch rather than submit;
 3. `TYPE_EMOJIS` in `app/services/notifications.py`;

@@ -42,7 +42,9 @@ TYPE_EMOJIS = {
 # How many users a cycle reads from KLAS at once. Deliberately small: KLAS
 # drops connections under light load already (that is what the retries in
 # kw.py exist for), and one user is itself several requests. The goal is to
-# stop a slow user from holding up everyone behind them, not to fan out wide.
+# stop a slow user from holding up everyone behind them, not to fan out wide:
+# however many users are being read, kw.MAX_CONCURRENT_REQUESTS bounds what
+# KLAS actually receives at one moment.
 MAX_CONCURRENT_USERS = 5
 
 # A single failed login is usually KLAS being KLAS. Three in a row (an hour and
@@ -208,9 +210,9 @@ def _collect_messages(
     (assignment_key, kind) pairs to record once the matching message is sent.
     """
     thresholds = sorted(TIME_THRESHOLDS) if thresholds is None else thresholds
-    # One instant for the whole cycle: KLAS is read subject by subject over
-    # tens of seconds, so deadlines are carried around as absolute times and
-    # turned into a remaining time only here.
+    # One instant for the whole cycle: reading KLAS takes seconds on a slow
+    # day, so deadlines are carried around as absolute times and turned into
+    # a remaining time only here.
     now = timezone.now()
     new_message = ""
     new_entries = []
@@ -382,6 +384,21 @@ async def _process_user(user) -> tuple[bool, int]:
                 _log_holds(user_id, set(), set())
                 return True, 0
 
+            # A category KLAS refused arrives as an empty one, which is also
+            # what "all of it handed in" looks like. What was read is still
+            # worth reminding about; what must not happen is acting on the
+            # absence of the rest.
+            incomplete = any(subject.get("incomplete") for subject in todo_list)
+            seeded = bool(getattr(state, "seeded", False))
+            if incomplete and not seeded:
+                # Seeding from part of the picture would leave the rest to be
+                # announced as brand new on the next cycle.
+                logging.warning(
+                    f"Incomplete assignment data for user {user_id}; "
+                    f"not seeding from it"
+                )
+                return False, 0
+
             thresholds = (
                 enabled_thresholds(user_settings)
                 if getattr(user_settings, "deadline_alerts", True)
@@ -400,7 +417,6 @@ async def _process_user(user) -> tuple[bool, int]:
 
             held = set()
             attempted = set()
-            seeded = bool(getattr(state, "seeded", False))
             if not seeded:
                 # First cycle for this user: remember what they already have so
                 # the whole semester's backlog is not announced as brand new.
@@ -437,7 +453,15 @@ async def _process_user(user) -> tuple[bool, int]:
             _log_holds(user_id, held, attempted)
 
         # Forget assignments KLAS no longer lists: submitted, or long expired.
-        await prune_sent_notifications(user_id, current_keys)
+        # Not after a partial read: work in a category KLAS refused would lose
+        # its rows and be announced, and reminded about, all over again.
+        if incomplete:
+            logging.info(
+                f"Kept the notification history of {user_id} as it is: "
+                f"KLAS answered incompletely"
+            )
+        else:
+            await prune_sent_notifications(user_id, current_keys)
 
         return True, sent_count
     except Exception as e:

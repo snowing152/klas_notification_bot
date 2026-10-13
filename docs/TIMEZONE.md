@@ -37,7 +37,7 @@ Things that follow:
 Every assignment dict from
 `get_todo_list()` carries `expire_at` — the deadline as naive Seoul time — and nothing
 downstream stores "time left". A countdown is only true at the instant it is computed,
-and this list is built subject by subject over tens of seconds and then cached for five
+and this list takes seconds to build on a slow day and is then cached for five
 minutes, so a stored one drifts twice over: lines of one `/show` would be measured from
 different instants, and a cached list would keep claiming minutes already gone.
 `todos._render_chunks` and `notifications._collect_messages` each take a single
