@@ -170,7 +170,11 @@ Two supported targets: systemd (`botdaemon.service`, placeholders to fill in) an
 (`railway.json`; worker with no exposed port). On Railway a volume must be mounted and
 `DATA_DIR` pointed at it, and `ENCRYPTION_KEY` must be set as a variable. `main.py`
 detects `RAILWAY_ENVIRONMENT` and skips the `logs/kwbot.log` file handler there; stdout
-logging is always on.
+logging is always on. On Railway each line goes out as one JSON object
+(`app/utils/log_format.py`): a plain line on stdout is "info" to Railway whatever it
+says, and only `level` makes an ERROR findable by severity. Log times are Korean on
+every host, read from `ZoneInfo` like `timezone.now()` — the Railway image has no system
+tz database, so the process `TZ` there is UTC in practice.
 
 `.gitignore` excludes `*.json` wholesale with `!railway.json` re-added — a new committed
 JSON file needs its own negation.

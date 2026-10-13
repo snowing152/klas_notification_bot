@@ -6,6 +6,7 @@ from app.services.announcements import announce_pending
 from app.services.notifications import start_notification_service
 from app.services.qr import close_session as close_qr_session
 from app.menu import initialize_bot_menu
+from app.utils.log_format import KoreanTimeFormatter, RailwayFormatter
 
 
 async def main():
@@ -77,11 +78,13 @@ if __name__ == "__main__":
             )
         )
 
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-        handlers=handlers,
-    )
+    # One formatter for every handler: the file handler only exists off Railway,
+    # so the on-disk log stays plain text.
+    formatter = RailwayFormatter() if on_railway else KoreanTimeFormatter()
+    for handler in handlers:
+        handler.setFormatter(formatter)
+
+    logging.basicConfig(level=logging.INFO, handlers=handlers)
 
     logging.info("Starting bot...")
     asyncio.run(main())
