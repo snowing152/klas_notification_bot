@@ -9,8 +9,9 @@ load_dotenv()
 # KLAS returns every date as Korean local time, so anything comparing those
 # against the local clock has to be on Korean time or every deadline is computed
 # hours off. The date-sensitive services do not rely on this: they read the zone
-# explicitly through app/utils/timezone.py. This stays as a second line of
-# defence for plain datetime.now() calls elsewhere (logging timestamps included).
+# explicitly through app/utils/timezone.py, and so does the time on a log line
+# (app/utils/log_format.py). This stays as a second line of defence for plain
+# datetime.now() calls elsewhere.
 #
 # It overwrites TZ rather than defaulting it: a host that sets TZ=UTC itself
 # would otherwise silently reintroduce the nine-hour error, and Seoul time is a
