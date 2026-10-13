@@ -158,6 +158,7 @@ klas_notification_bot/
 │   ├── 📄 config.py         # Settings management
 │   ├── 📄 strings.py        # Multi-language strings
 │   └── 📄 keyboards.py      # Telegram keyboards
+├── 📁 docs/                 # Architecture, deployment, security, roadmap
 ├── 📁 tests/                # Test suite
 ├── 📁 images/               # Assets & screenshots
 ├── 📁 logs/                 # Runtime logs (gitignored)
@@ -204,6 +205,7 @@ graph TD
 | ----------- | -------------------------------------- |
 | `/start`    | 🏁 Welcome message & quick access menu |
 | `/register` | 🔐 Login to KLAS system                |
+| `/account`  | 👤 Your KLAS and library login, one place |
 | `/show`     | 📚 View assignments & deadlines        |
 | `/info`     | 👤 Student information dashboard       |
 
@@ -275,8 +277,26 @@ Quiet hours are Korean local time, like everything else that touches KLAS dates.
 | Running it in production | [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) |
 | What is stored about users, and reporting a vulnerability | [docs/SECURITY.md](docs/SECURITY.md) |
 | Known bugs and limitations | [docs/KNOWN_ISSUES.md](docs/KNOWN_ISSUES.md) |
+| Where the project is going | [docs/ROADMAP.md](docs/ROADMAP.md) |
 | How the code is put together | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) and the rest of [docs/](docs/) |
 | Working on it with a coding agent | [AGENTS.md](AGENTS.md) |
+
+---
+
+## 🗺️ Roadmap
+
+The aim is a bot that is reliable, cheap to run and useful past the first week of a
+semester. In order:
+
+1. **Reliability** - fix what users can already hit: a registration lost on restart,
+   prompts that swallow commands, a `/show` that is silently short.
+2. **Footprint** - measure and lower memory, bound the assistant's usage, keep the
+   hosting bill inside the plan's included usage.
+3. **Usefulness** - a daily digest, "done" and per-subject mute on reminders, calendar
+   export, then grades and course notices.
+
+The full plan, with what is deliberately _not_ planned, is in
+[docs/ROADMAP.md](docs/ROADMAP.md).
 
 ---
 
@@ -363,6 +383,13 @@ Keep a copy somewhere safe. It is never recoverable from the database.
 
 **4. Deploy.** `railway up`, or connect the GitHub repo for push-to-deploy.
 
+**What it costs.** The bot idles between messages, so on Railway nearly all of the bill
+is RAM (about $10 per GB-month); CPU and network are cents, and a 1 GB volume is $0.15.
+The Hobby plan's $5 subscription includes $5 of usage, so a bot averaging around 0.3 GB
+of RAM stays inside it. Check the service's **Metrics** tab after a deploy, and set a
+usage alert in the dashboard. The arithmetic is in
+[docs/ROADMAP.md](docs/ROADMAP.md#running-cost).
+
 > ⚠️ **Timezone.** KLAS reports every deadline in Korean local time and the bot compares
 > it against the local clock, so a UTC container would compute every deadline nine hours
 > off. `app/config.py` therefore _forces_ `TZ=Asia/Seoul` at import — it overwrites
@@ -422,7 +449,8 @@ pytest -v
 - 🔐 **Encrypted Storage** - User passwords encrypted with Fernet
 - 🛡️ **Anti-Spam** - Built-in rate limiting
 - 🔑 **Secure Keys** - Environment-based configuration
-- 🚫 **No Data Sharing** - Your data stays private
+- 🚫 **No Data Sharing** - Your passwords go only to Kwangwoon's own services. Free-text
+  messages to the AI assistant are sent to Google Gemini, so keep personal data out of them
 
 ### ⚠️ Security Best Practices
 
@@ -455,7 +483,8 @@ pytest -v
 ### AI Assistant Replies With An Error
 
 - ✅ Check `GEMINI_API_KEY` in `.env`
-- ✅ Check `logs/kwbot.log` — an expired model name shows up here as a 404
+- ✅ Check the logs (the Railway dashboard, or `logs/kwbot.log` when self-hosting) — an
+  expired model name shows up as a 404
 
 ### `/qr` Doesn't Work
 

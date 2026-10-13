@@ -76,6 +76,7 @@ Each of these breaks production or loses data when ignored. The linked doc has t
 | Adding or changing an env var | [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md), [.env.example](.env.example) |
 | Credentials or personal data | [docs/SECURITY.md](docs/SECURITY.md) |
 | Taking over the project | [docs/HANDOFF.md](docs/HANDOFF.md) |
+| Planning work, or judging what to build next | [docs/ROADMAP.md](docs/ROADMAP.md) |
 
 ## Keeping docs current
 
