@@ -68,7 +68,11 @@ a message, and a send Telegram refused is left unrecorded and retried next cycle
 work silently, so switching a user on never dumps a semester into the chat) and the
 consecutive-login-failure counter behind the "your KLAS password stopped working"
 warning. `user_settings` holds the `/settings` switches, defaulting to the old behaviour;
-quiet hours are read through `timezone.now()`, so they are Korean local hours.
+quiet hours are read through `timezone.now()`, so they are Korean local hours. There is
+no migration tool: `init_db` is `create_all`, which only adds tables, and a default
+changed in `models.py` reaches new rows alone. A change that must reach existing users
+goes into `DATA_FIXES` in `app/database/database.py` — each runs once per database,
+counted in SQLite's `user_version`.
 `announcements_seen` is keyed by announcement name, which is what makes
 `app/services/announcements.py` safe to run on every startup.
 

@@ -25,10 +25,33 @@ AsyncSessionLocal = sessionmaker(
 )
 
 
+# One-off fixes to rows already written, numbered from 1. create_all only ever
+# adds tables, and a default changed in models.py reaches new rows alone, so
+# anything that must change for existing users goes here. SQLite's own
+# `user_version` counts how many have run, which is what makes each of them
+# touch a database exactly once.
+DATA_FIXES = (
+    # 1: quiet hours used to open at 23:00. /settings only switches the window
+    # on and off, so every 23 in the table is that old default and none is a
+    # choice. Once rather than on every start, because the hour may yet become
+    # something a user picks.
+    "UPDATE user_settings SET quiet_start = 1 WHERE quiet_start = 23",
+)
+
+
+async def _apply_data_fixes(conn):
+    applied = (await conn.exec_driver_sql("PRAGMA user_version")).scalar()
+    for number, statement in enumerate(DATA_FIXES, start=1):
+        if number > applied:
+            await conn.exec_driver_sql(statement)
+            await conn.exec_driver_sql(f"PRAGMA user_version = {number}")
+
+
 async def init_db():
     """Initialize the database, creating all tables"""
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+        await _apply_data_fixes(conn)
     logging.info("Database initialized successfully")
 
 

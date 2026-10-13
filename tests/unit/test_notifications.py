@@ -393,8 +393,39 @@ def _thresholds_recorded(sent: dict) -> set:
     return {kind for kind in kinds if kind.startswith("t")}
 
 
+async def test_quiet_hours_start_after_the_midnight_reminder(monkeypatch):
+    """KLAS deadlines are usually 23:59, so the 24h warning falls due just
+    after midnight. Held until 08:00 it used to arrive with sixteen hours left."""
+    await _threshold_only_user()
+    bot = _patch_user_deps(
+        monkeypatch,
+        FakeApi(login_result={"JSESSIONID": "x"}, todo_list=make_todo(hours=23.9, hour=0)),
+        hour=0,
+    )
+
+    await notifications._process_user(FakeUser("1"))
+
+    assert len(bot.sent) == 1, "the 24h reminder waited for the morning"
+    assert _thresholds_recorded(await get_sent_notifications("1")) == {"t24"}
+
+
+def test_quiet_hours_cover_the_night_and_nothing_else():
+    class Defaults:
+        quiet_hours = True
+        quiet_start = 1
+        quiet_end = 8
+
+    quiet = {
+        hour
+        for hour in range(24)
+        if notifications.in_quiet_hours(Defaults(), now=at_hour(hour))
+    }
+
+    assert quiet == set(range(1, 8))
+
+
 async def test_quiet_hours_hold_the_day_ahead_reminder(monkeypatch):
-    """KLAS deadlines are usually 23:59, so the 24h warning lands at night."""
+    """A reminder that falls due in the small hours waits for the morning."""
     await _threshold_only_user()
     api = FakeApi(login_result={"JSESSIONID": "x"}, todo_list=make_todo(hours=20, hour=2))
     bot = _patch_user_deps(monkeypatch, api, hour=2)
