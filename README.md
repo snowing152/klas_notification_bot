@@ -4,7 +4,7 @@
 
 **A smart Telegram bot for Kwangwoon University students**
 
-[![Python](https://img.shields.io/badge/Python-3.10+-blue.svg?style=for-the-badge&logo=python&logoColor=white)](https://python.org)
+[![Python](https://img.shields.io/badge/Python-3.12-blue.svg?style=for-the-badge&logo=python&logoColor=white)](https://python.org)
 [![Telegram](https://img.shields.io/badge/Telegram-Bot-blue.svg?style=for-the-badge&logo=telegram&logoColor=white)](https://telegram.org)
 [![aiogram](https://img.shields.io/badge/aiogram-3.x-blue.svg?style=for-the-badge)](https://aiogram.dev)
 [![SQLAlchemy](https://img.shields.io/badge/SQLAlchemy-2.x-red.svg?style=for-the-badge&logo=sqlalchemy&logoColor=white)](https://sqlalchemy.org)
@@ -12,7 +12,7 @@
 [![License](https://img.shields.io/badge/License-MIT-green.svg?style=flat-square)](LICENSE)
 [![Tests](https://img.shields.io/badge/Tests-pytest-green.svg?style=flat-square)](tests/)
 
-[🚀 Quick Start](#-quick-start) • [📖 Documentation](#-features) • [🛠️ Installation](#️-installation) • [🤝 Contributing](#-contributing)
+[🚀 Quick Start](#-quick-start) • [📖 Documentation](#-features) • [🛠️ Installation](#-installation) • [🤝 Contributing](#-contributing)
 
 </div>
 
@@ -79,9 +79,11 @@
 
 ---
 
+## 🚀 Quick Start
+
 ### Prerequisites
 
-- 🐍 **Python 3.10+**
+- 🐍 **Python 3.12** (the version in `.python-version`)
 - 🤖 **Telegram Bot Token** ([Get one from @BotFather](https://t.me/botfather))
 - 🔑 **Google Gemini API Key** (Optional, for AI features)
 
@@ -110,18 +112,22 @@ python -c "from app.utils.encryption import generate_key; generate_key()"
 
 ### 🔧 Configuration
 
-Create a `.env` file in the project root:
+Copy the template and fill it in:
+
+```bash
+cp .env.example .env
+```
 
 ```env
 BOT_TOKEN=your_telegram_bot_token_here
-GEMINI_API_KEY=your_google_gemini_api_key_here
 ADMIN_ID=your_telegram_user_id
-
-# Optional — sensible defaults are used when omitted
-DATA_DIR=.                 # where bot_users.db and encryption_key.key live
-ENCRYPTION_KEY=            # Fernet key; falls back to encryption_key.key when empty
-KW_TZ=                     # leave empty: the bot forces Asia/Seoul, which KLAS requires
+GEMINI_API_KEY=your_google_gemini_api_key_here
 ```
+
+[`.env.example`](.env.example) lists every variable the bot reads. The optional ones
+(`DATA_DIR`, `ENCRYPTION_KEY`, `KW_TZ`, ...) have sensible defaults — leave them commented
+out rather than empty, and keep comments on their own lines: an empty `KW_TZ` or a
+trailing `# comment` after a value stops the bot at startup.
 
 `ADMIN_ID` is your own numeric Telegram id — [@userinfobot](https://t.me/userinfobot)
 will tell you yours. It gates the `/notify` broadcast command, and startup fails with a
@@ -255,9 +261,22 @@ deploy does not repeat it.
 | New assignments     | on          | Announce work when it appears                            |
 | Deadline reminders  | on          | The 24/12/6/3/2/1 hour warnings                          |
 | Urgent only         | off         | Keeps only the 6, 3 and 1 hour warnings                  |
-| Quiet hours         | on, 23-08   | Holds notifications until morning; the 1 and 2 hour ones still go out |
+| Quiet hours         | on, 01-08   | Holds notifications until morning; the 1 and 2 hour ones still go out |
 
 Quiet hours are Korean local time, like everything else that touches KLAS dates.
+
+---
+
+## 📚 Documentation
+
+| For | Read |
+| --- | --- |
+| Taking over the project | [docs/HANDOFF.md](docs/HANDOFF.md) |
+| Running it in production | [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) |
+| What is stored about users, and reporting a vulnerability | [docs/SECURITY.md](docs/SECURITY.md) |
+| Known bugs and limitations | [docs/KNOWN_ISSUES.md](docs/KNOWN_ISSUES.md) |
+| How the code is put together | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) and the rest of [docs/](docs/) |
+| Working on it with a coding agent | [AGENTS.md](AGENTS.md) |
 
 ---
 
@@ -408,6 +427,7 @@ pytest -v
 ### ⚠️ Security Best Practices
 
 - Never commit `.env` or `encryption_key.key`
+- See [docs/SECURITY.md](docs/SECURITY.md) for what is stored and how to report a vulnerability
 - Rotate API keys regularly
 - Use strong, unique passwords
 - Keep dependencies updated
@@ -424,7 +444,7 @@ pytest -v
 - ✅ Check `BOT_TOKEN` in `.env`
 - ✅ Make sure `ADMIN_ID` is a number — a missing or placeholder value fails at startup
 - ✅ Verify `ENCRYPTION_KEY` is set, or that `encryption_key.key` exists (see the generation step above)
-- ✅ Ensure Python 3.10+ is installed
+- ✅ Ensure Python 3.12 is installed
 
 ### KLAS Login Fails
 

@@ -1,0 +1,40 @@
+name: Tests
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  pytest:
+    runs-on: ubuntu-latest
+    env:
+      # app/config.py raises at import without these two. The values are
+      # placeholders: nothing in the suite contacts Telegram.
+      BOT_TOKEN: "123456:test-token"
+      ADMIN_ID: "1"
+      # DATA_DIR is left unset on purpose: it defaults to the working directory,
+      # which exists, and tests/conftest.py points every test at a tmp database.
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version-file: .python-version
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            requirements-dev.txt
+
+      - name: Install dependencies
+        run: pip install -r requirements-dev.txt
+
+      # Five tests encrypt a password for real and need a key. Generated per
+      # run so that no key, not even a throwaway one, is committed.
+      - name: Generate a throwaway encryption key
+        run: echo "ENCRYPTION_KEY=$(python -c 'from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())')" >> "$GITHUB_ENV"
+
+      - name: Run tests
+        run: pytest --no-cov -q
