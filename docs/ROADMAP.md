@@ -106,10 +106,11 @@ Fixes for things users can already hit. Ordered by how badly they bite.
 Aim: lower average RAM and a bounded Gemini bill, without losing a feature. Measure first,
 change second; every item here needs a before and after number.
 
-- [ ] **Measure.** Log resident memory and the cycle duration on the existing
-      `Notification cycle finished` line. Memory peaks are most likely the notification
-      cycle (five users at a time, many requests each) or `/qr` and `/info` image work,
-      but that is a guess until the line says so.
+- [x] **Measure.** The `Notification cycle finished` line now ends with the cycle's
+      duration and memory, and `Startup memory` gives the baseline
+      ([DEPLOYMENT.md](DEPLOYMENT.md#logs)). Memory peaks are most likely the
+      notification cycle (five users at a time, many requests each) or `/qr` and `/info`
+      image work; read a few days of these lines before choosing the next item.
 - [ ] **Find the baseline.** Check what is imported at startup (the Gemini SDK, Pillow,
       SQLAlchemy) and whether `google-genai` can be imported only when a key is set.
 - [ ] **Bound the in-memory dictionaries.** `todos._items_cache`, `chat_history_storage`

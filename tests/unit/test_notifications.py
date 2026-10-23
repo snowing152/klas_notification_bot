@@ -716,3 +716,50 @@ def test_format_left_time_keeps_a_zero_hour_under_a_day_count():
         == "3h 20m"
     )
     assert notifications.format_left_time(datetime.timedelta(minutes=45)) == "45m"
+
+
+def _cycle_lines(caplog) -> list:
+    return [
+        (record.levelno, record.getMessage())
+        for record in caplog.records
+        if record.getMessage().startswith("Notification cycle finished")
+    ]
+
+
+def test_cycle_summary_carries_duration_and_memory(caplog):
+    caplog.set_level(logging.INFO)
+    notifications._log_cycle_summary(31, 0, 3, 41.4, 194.2, 212.3, 290.0)
+
+    assert _cycle_lines(caplog) == [
+        (
+            logging.INFO,
+            "Notification cycle finished: all 31 users checked, 3 notifications "
+            "sent in 41s, memory 212 MB (+18 MB, peak 290 MB)",
+        )
+    ]
+
+
+def test_cycle_summary_with_failed_users_is_a_warning(caplog):
+    caplog.set_level(logging.INFO)
+    notifications._log_cycle_summary(31, 2, 0, 95, 230.0, 228.0, 290.0)
+
+    assert _cycle_lines(caplog) == [
+        (
+            logging.WARNING,
+            "Notification cycle finished: 29/31 users checked, 2 failed, "
+            "0 notifications sent in 95s, memory 228 MB (-2 MB, peak 290 MB)",
+        )
+    ]
+
+
+def test_cycle_summary_leaves_out_what_was_not_measured(caplog):
+    """No /proc (macOS, Windows): the line is the old one plus the duration."""
+    caplog.set_level(logging.INFO)
+    notifications._log_cycle_summary(5, 0, 0, 12, None, None, 300.0)
+    notifications._log_cycle_summary(5, 0, 0, 12, None, 200.0, None)
+
+    assert [message for _, message in _cycle_lines(caplog)] == [
+        "Notification cycle finished: all 5 users checked, 0 notifications sent in 12s",
+        "Notification cycle finished: all 5 users checked, 0 notifications sent "
+        "in 12s, memory 200 MB",
+    ]

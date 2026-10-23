@@ -117,7 +117,8 @@ Lines worth knowing:
 
 | Line | Means |
 |---|---|
-| `Notification cycle finished: ...` | one per cycle; INFO when every user was read, WARNING with a failed count otherwise |
+| `Notification cycle finished: ...` | one per cycle; INFO when every user was read, WARNING with a failed count otherwise. Ends with the cycle's duration and memory ([NOTIFICATIONS.md](NOTIFICATIONS.md#the-loop)) |
+| `Startup memory: N MB` | resident memory once handlers are registered, before polling: the imports and the database. A cycle line far above it, or climbing from one cycle to the next, is where RAM goes |
 | `Notification sent to <id> (...)` | a delivery, with its kind |
 | `Notification held for <id> (...)` / `Held notification ... dropped unsent` | quiet hours kept a reminder back / a held one stopped being due before it could go out |
 | `Uncaught exception` (critical) | the process died; at startup this is usually `app/config.py` refusing a variable |
@@ -126,6 +127,10 @@ Lines worth knowing:
 | `Incomplete assignment data for subject ...` | one category of one subject could not be read |
 | `Error generating response: ...` | the Gemini call failed; a retired model name shows up here |
 | `DATA_DIR points at ..., which does not exist` | inside an `Uncaught exception` entry: no volume mounted; the bot did not start |
+
+The memory figures are the Python process alone. Railway's Metrics tab measures the
+container, which also counts page cache, so it reads higher; compare when the two move,
+not their size.
 
 Logs carry Telegram user ids and event kinds. They must never carry a password
 ([SECURITY.md](SECURITY.md)).

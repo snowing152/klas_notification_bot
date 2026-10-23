@@ -48,7 +48,12 @@ those slots and is slower for it.
 `_process_user` handles its own errors, so one broken account never aborts a cycle.
 
 Each cycle ends with one summary line — `Notification cycle finished: all N users
-checked, X notifications sent` at INFO, or the same with a failed count at WARNING. Each
+checked, X notifications sent in 41s, memory 212 MB (+18 MB, peak 290 MB)` at INFO, or
+the same with a failed count at WARNING. The tail after "sent" is how long the cycle took
+and the process's resident memory after it: the change over the cycle, and the highest it
+has been since the start (`app/utils/memory.py`). Whatever cannot be measured on the host
+is left out — without `/proc` the line ends at the duration. The prefix is what log
+filters match, so new figures go after it, never into it. Each
 delivery logs `Notification sent to <user id> (threshold=3h)` or `(new assignments)`:
 the user and the kind, deliberately never the assignment text. Quiet hours log
 `Notification held for <user id> (threshold=6h, quiet hours)` once when a hold begins,

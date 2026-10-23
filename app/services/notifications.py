@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import time
 
 from app.bot import bot
 from app.config import settings
@@ -17,7 +18,7 @@ from app.database.database import (
 )
 from app.services.kw import KwangwoonUniversityApi
 from app.strings import Strings, Language
-from app.utils import timezone
+from app.utils import memory, timezone
 
 
 # Define time thresholds in hours and their corresponding emoji indicators
@@ -508,6 +509,50 @@ async def run_notification_cycle(users) -> tuple[int, int]:
     return failed, sent
 
 
+def _memory_summary(rss_before, rss_after, peak) -> str:
+    """The memory part of the cycle line, e.g. `, memory 212 MB (+18 MB, peak 290 MB)`.
+
+    Only what was measured is shown; with no current figure there is no part.
+    """
+    if rss_after is None:
+        return ""
+    details = []
+    if rss_before is not None:
+        details.append(f"{rss_after - rss_before:+.0f} MB")
+    if peak is not None:
+        details.append(f"peak {peak:.0f} MB")
+    suffix = f" ({', '.join(details)})" if details else ""
+    return f", memory {rss_after:.0f} MB{suffix}"
+
+
+def _log_cycle_summary(
+    users: int,
+    failed: int,
+    sent: int,
+    seconds: float,
+    rss_before=None,
+    rss_after=None,
+    peak=None,
+) -> None:
+    """The one line per cycle. Its "Notification cycle finished" prefix is what
+    the dashboard filters on, so the figures only ever go after it.
+
+    Duration and memory are there to say where the RAM bill comes from: the
+    container's own graph cannot tell a cycle from anything else the bot does.
+    """
+    tail = f" in {seconds:.0f}s{_memory_summary(rss_before, rss_after, peak)}"
+    if failed:
+        logging.warning(
+            f"Notification cycle finished: {users - failed}/{users} users "
+            f"checked, {failed} failed, {sent} notifications sent{tail}"
+        )
+    else:
+        logging.info(
+            f"Notification cycle finished: all {users} users checked, "
+            f"{sent} notifications sent{tail}"
+        )
+
+
 async def check_todos():
     while True:
         try:
@@ -515,18 +560,18 @@ async def check_todos():
             await asyncio.sleep(settings.NOTIFICATION_CHECK_INTERVAL)
 
             users = await get_all_users()
+            rss_before = memory.rss_mb()
+            started = time.monotonic()
             failed_users, sent_count = await run_notification_cycle(users)
 
-            if failed_users:
-                logging.warning(
-                    f"Notification cycle finished: {len(users) - failed_users}"
-                    f"/{len(users)} users checked, {failed_users} failed, "
-                    f"{sent_count} notifications sent"
-                )
-            else:
-                logging.info(
-                    f"Notification cycle finished: all {len(users)} users checked, "
-                    f"{sent_count} notifications sent"
-                )
+            _log_cycle_summary(
+                len(users),
+                failed_users,
+                sent_count,
+                time.monotonic() - started,
+                rss_before,
+                memory.rss_mb(),
+                memory.peak_rss_mb(),
+            )
         except Exception as e:
             logging.error(f"Error in check_todos: {e}", exc_info=True)

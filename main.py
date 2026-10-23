@@ -17,6 +17,7 @@ from app.services.announcements import announce_pending
 from app.services.notifications import start_notification_service
 from app.services.qr import close_session as close_qr_session
 from app.menu import initialize_bot_menu
+from app.utils import memory
 
 
 async def main():
@@ -32,6 +33,12 @@ async def main():
 
         # Setup all handlers
         setup_handlers(dp)
+
+        # What the process costs before it has done anything: the imports and
+        # the database. Each cycle's line says how far it moves from here.
+        startup_rss = memory.rss_mb()
+        if startup_rss is not None:
+            logging.info(f"Startup memory: {startup_rss:.0f} MB")
 
         # Tell users about features added since they last heard from the bot.
         # A task rather than an await: nothing about polling should wait on it.
