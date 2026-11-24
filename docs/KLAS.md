@@ -7,10 +7,46 @@ interface itself requests, and none of it is documented or promised to stay.
 ## The client
 
 `KwangwoonUniversityApi` is an async context manager — always use `async with`, one
-instance per operation. `login(login_id, login_pwd)` fetches the login form, reads KLAS's
-public key from `LoginSecurity.do`, posts the encrypted credentials to `LoginConfirm.do`
-and keeps the cookies. It never raises for a network fault: a falsy answer means "this
+instance per operation. It never raises for a network fault: a falsy answer means "this
 user could not be read this time", and every caller checks it.
+
+### Login and the second factor
+
+Since November 2026 KLAS asks for a second factor on **every** login, in the same
+browser too: a push the student approves in the KLAS phone app. The flow, captured from
+a browser login on 2026-11-24:
+
+1. `LoginSecurity.do` hands out a fresh RSA public key; the credentials are encrypted
+   with it (PKCS#1 v1.5, what the page's jsencrypt uses) into `loginToken`.
+2. `LoginCaptcha.do` `{loginToken, captcha: ""}` answers `0` when no captcha is due.
+   Any other answer is logged and left to the next step to judge.
+3. `LoginConfirm.do` `{loginToken, captcha: "", redirectUrl, redirectTabUrl}` answers
+   `errorCount: 0` **and** `response.twoFactorAt: "Y"` when the password is right but
+   the push is still due. Only `errorCount: 0` without `twoFactorAt` is a login.
+4. `/ext/pass/UserCertInfoOne.do` (body in `request_push`) answers `status: "1"` when
+   a phone is registered for push; otherwise the student has to install the KLAS app.
+5. `POST /usr/cmn/cert/UserCertPushResult.do?loginId=<id>` **sends the push**. The
+   EUC-KR page carries the push id `tid` and its expiry `limit` (epoch ms, one hour
+   out) in an inline script; `_parse_push_page` reads them.
+6. `/ext/pass/UserCertPushChk.do` `{loginId, tid, limit}` answers `returnCode: "0000"`
+   once the push is approved. The browser asks once, when the student clicks 확인;
+   the bot polls.
+7. Steps 1-3 again **on the same session cookies**: KLAS remembers the approval in the
+   session, and this time `LoginConfirm.do` answers `redirect: true`.
+
+In code: `attempt_login()` runs the login form check and steps 1-3 and answers a
+`LoginResult` (`OK`, `TWO_FACTOR_REQUIRED` or `FAILED`). `request_push()` runs steps 4-5
+and `wait_for_push_approval()` steps 6-7 on the same instance. The bot treats only the
+second `LoginConfirm.do` as proof: a `0000` from `UserCertPushChk.do` that is not
+followed by a login is retried at most `MAX_CREDENTIAL_RESUBMITS` times. `login()` is the
+old interface: cookies on `OK`, `None` otherwise, so it can no longer finish a login on
+its own.
+
+A session ends after two idle hours (`/api/v1/session/info` reports `remainingTime`,
+7200 right after login). Polling `session/info` does not extend it; `GET
+UpdateSession.do` resets it, which is what KLAS's own "연장" button calls.
+`keep_alive()` calls it and then checks the session is still logged in. Whether KLAS
+also has a hard limit on how long a session may live is not known yet.
 
 KLAS regularly drops idle keep-alive connections, so requests go through
 `_request_with_retries`: `REQUEST_RETRIES = 2` replays one second apart, on connection
@@ -24,7 +60,7 @@ subject added one more. What keeps that from being a burst is `_request_slots`: 
 module-level semaphore, `MAX_CONCURRENT_REQUESTS = 10`, that every `_post_json` call of
 every instance goes through. It is per process on purpose: KLAS sees one address whoever
 the request is for, and the notification cycle reads several users at a time. A request
-keeps its slot while it retries. Login is not counted; its three requests run one after
+keeps its slot while it retries. The login steps are not counted; they run one after
 another.
 
 The requests run in `asyncio.TaskGroup`s, not `gather()`: one that fails for good cancels
@@ -42,7 +78,7 @@ What the return values mean:
 
 | Call | `None` | Empty |
 |---|---|---|
-| `login()` | login failed or KLAS was unreachable | — |
+| `login()` | login failed, KLAS was unreachable, or the second factor is due | — |
 | `_post_json()` | error status, or a body that is not JSON (logged as an error) | — |
 | `get_todo_list()` | KLAS could not be read | `[]`: the student has no subjects this semester |
 
@@ -61,7 +97,9 @@ All under `https://klas.kw.ac.kr`.
 
 | Path | Used for |
 |---|---|
-| `/usr/cmn/login/LoginForm.do`, `LoginSecurity.do`, `LoginConfirm.do` | login |
+| `/usr/cmn/login/LoginForm.do`, `LoginSecurity.do`, `LoginCaptcha.do`, `LoginConfirm.do` | login |
+| `/ext/pass/UserCertInfoOne.do`, `/usr/cmn/cert/UserCertPushResult.do`, `/ext/pass/UserCertPushChk.do` | second factor (push) |
+| `/usr/cmn/login/UpdateSession.do` | extending the session |
 | `/std/cmn/frame/YearhakgiAtnlcSbjectList.do` | the semester's subjects |
 | `/std/lis/evltn/SelectOnlineCntntsStdList.do` | lectures |
 | `/std/lis/evltn/TaskStdList.do` | homeworks |

@@ -50,7 +50,7 @@ class FakeResponse:
             raise self._raises
         return self._payload
 
-    async def text(self):
+    async def text(self, **kwargs):
         if self._raises:
             raise self._raises
         return self._text
@@ -170,7 +170,8 @@ async def test_get_subjects_returns_none_on_empty_payload():
     assert await api.get_subjects() is None
 
 
-LOGIN_FORM_URL = "https://klas.kw.ac.kr/usr/cmn/login/LoginForm.do"
+LOGIN_FORM_URL = kw_service.LOGIN_FORM_URL
+FRAME_URL = "https://klas.kw.ac.kr/std/cmn/frame/Frame.do"
 
 
 class FakeCookie:
@@ -180,28 +181,43 @@ class FakeCookie:
 
 
 class FakeLoginSession:
-    """Serves KLAS's three-step login: form GET, public key POST, login POST."""
+    """Serves KLAS's login endpoints, each from its own queue of answers.
 
-    def __init__(self, *post_outcomes, form_url=LOGIN_FORM_URL):
-        self._post_outcomes = list(post_outcomes)
+    Routing by URL instead of by call order keeps a test readable when the
+    login gains a step, as it did with LoginCaptcha.do and the push requests.
+    Each queue repeats its last answer once it runs out.
+    """
+
+    def __init__(self, routes=None, form_url=LOGIN_FORM_URL):
+        self._routes = {url: list(outcomes) for url, outcomes in (routes or {}).items()}
         self._form_url = form_url
         self.cookie_jar = [FakeCookie("JSESSIONID", "fresh")]
-        self.posts = 0
+        self.posted = []
+        self.got = []
 
-    def get(self, *args, **kwargs):
-        # Answering from the form's own URL means "not logged in yet", which is
-        # what sends login() down the full three-step path.
+    def get(self, url, *args, **kwargs):
+        self.got.append(url)
+        if url == kw_service.UPDATE_SESSION_URL:
+            return FakeResponse(status=304)
+        # Answering from the form's own URL means "not logged in"; any other
+        # final URL is KLAS redirecting a valid session away from the form.
         return FakeResponse(url=self._form_url)
 
-    def post(self, *args, **kwargs):
-        outcome = self._post_outcomes[min(self.posts, len(self._post_outcomes) - 1)]
-        self.posts += 1
-        return outcome
+    def post(self, url=None, *args, **kwargs):
+        self.posted.append((url, kwargs))
+        outcomes = self._routes.get(url)
+        if not outcomes:
+            raise AssertionError(f"unexpected POST to {url}")
+        calls = sum(1 for posted_url, _ in self.posted if posted_url == url)
+        return outcomes[min(calls - 1, len(outcomes) - 1)]
+
+    def posts_to(self, url):
+        return [kwargs for posted_url, kwargs in self.posted if posted_url == url]
 
 
-def _login_api(*post_outcomes, form_url=LOGIN_FORM_URL):
+def _login_api(routes=None, form_url=LOGIN_FORM_URL):
     api = KwangwoonUniversityApi()
-    api.session = FakeLoginSession(*post_outcomes, form_url=form_url)
+    api.session = FakeLoginSession(routes, form_url=form_url)
     # The real encryptor needs a valid RSA key; the login flow under test does
     # not care what the token contains.
     api._encryptor = lambda public_key, data: "encrypted-token"
@@ -209,43 +225,276 @@ def _login_api(*post_outcomes, form_url=LOGIN_FORM_URL):
 
 
 PUBLIC_KEY = FakeResponse(payload={"publicKey": "test-key"})
+NO_CAPTCHA = FakeResponse(text="0")
+# LoginConfirm.do's answers, as captured from a browser login on 2026-11-24.
+TWO_FACTOR_REQUIRED = FakeResponse(
+    payload={
+        "redirectUrl": "",
+        "fieldErrors": [],
+        "responseText": "",
+        "response": {"twoFactorAt": "Y"},
+        "errorCount": 0,
+        "redirect": False,
+        "loginRequired": False,
+    }
+)
+LOGGED_IN = FakeResponse(
+    payload={
+        "redirectUrl": "/std/cmn/frame/Frame.do",
+        "fieldErrors": [],
+        "responseText": "",
+        "response": {"frstPwdAt": None, "pushToken": None, "userId": "2024000000UA"},
+        "errorCount": 0,
+        "redirect": True,
+        "loginRequired": False,
+    }
+)
+
+
+def _credential_routes(*confirm_outcomes):
+    return {
+        kw_service.LOGIN_SECURITY_URL: [PUBLIC_KEY],
+        kw_service.LOGIN_CAPTCHA_URL: [NO_CAPTCHA],
+        kw_service.LOGIN_CONFIRM_URL: list(confirm_outcomes),
+    }
 
 
 async def test_login_retries_a_dropped_connection():
     """Regression: KLAS dropping the login POST used to leave cookies empty,
     and every later call reported 'No cookies found' instead of retrying."""
-    api = _login_api(
-        PUBLIC_KEY, ConnectionFailure(), FakeResponse(payload={"errorCount": 0})
-    )
+    api = _login_api(_credential_routes(ConnectionFailure(), LOGGED_IN))
 
     assert await api.login("student", "pw") == {"JSESSIONID": "fresh"}
-    assert api.session.posts == 3, "the public key POST plus the retried login POST"
+    assert len(api.session.posts_to(kw_service.LOGIN_CONFIRM_URL)) == 2
 
 
 async def test_login_returns_none_when_the_connection_never_recovers():
-    api = _login_api(PUBLIC_KEY, ConnectionFailure())
+    api = _login_api({kw_service.LOGIN_SECURITY_URL: [ConnectionFailure()]})
 
     assert await api.login("student", "pw") is None
-    assert api.session.posts == 1 + kw_service.REQUEST_RETRIES + 1
+    assert (
+        len(api.session.posts_to(kw_service.LOGIN_SECURITY_URL))
+        == kw_service.REQUEST_RETRIES + 1
+    )
     assert api.cookies == {}
 
 
 async def test_login_returns_none_on_wrong_password():
     api = _login_api(
-        PUBLIC_KEY,
-        FakeResponse(payload={"errorCount": 1, "fieldErrors": [{"message": "nope"}]}),
+        _credential_routes(
+            FakeResponse(payload={"errorCount": 1, "fieldErrors": [{"message": "nope"}]})
+        )
     )
 
     assert await api.login("student", "wrong") is None
 
 
+async def test_login_failure_without_field_errors_does_not_crash():
+    """The old parser indexed fieldErrors[0] and raised on an empty list."""
+    api = _login_api(_credential_routes(FakeResponse(payload={"errorCount": 1})))
+
+    result = await api.attempt_login("student", "pw")
+
+    assert result.status is kw_service.LoginStatus.FAILED
+
+
 async def test_login_with_valid_cookies_returns_them():
     """A redirect away from the login form means the session is still good.
     This path used to return a bare 1, which no caller could use as cookies."""
-    api = _login_api(form_url="https://klas.kw.ac.kr/std/cmn/frame/Frame.do")
+    api = _login_api(form_url=FRAME_URL)
 
     assert await api.login("student", "pw") == {"JSESSIONID": "fresh"}
-    assert api.session.posts == 0, "an already-valid session needs no login round trip"
+    assert api.session.posted == [], "an already-valid session needs no login round trip"
+
+
+async def test_login_sends_the_captcha_check_like_the_browser():
+    api = _login_api(_credential_routes(LOGGED_IN))
+
+    await api.login("student", "pw")
+
+    (captcha_call,) = api.session.posts_to(kw_service.LOGIN_CAPTCHA_URL)
+    assert captcha_call["json"] == {"loginToken": "encrypted-token", "captcha": ""}
+    (confirm_call,) = api.session.posts_to(kw_service.LOGIN_CONFIRM_URL)
+    assert confirm_call["json"]["loginToken"] == "encrypted-token"
+    assert confirm_call["json"]["captcha"] == ""
+
+
+async def test_two_factor_answer_is_not_a_finished_login():
+    """Regression: LoginConfirm.do answers errorCount 0 when it wants the push,
+    and login() used to hand back the cookies of that half-open session."""
+    api = _login_api(_credential_routes(TWO_FACTOR_REQUIRED))
+
+    result = await api.attempt_login("student", "pw")
+
+    assert result.status is kw_service.LoginStatus.TWO_FACTOR_REQUIRED
+    assert result.cookies is None
+
+
+async def test_login_answers_none_when_two_factor_is_required():
+    api = _login_api(_credential_routes(TWO_FACTOR_REQUIRED))
+
+    assert await api.login("student", "pw") is None
+
+
+# UserCertPushResult.do's inline script, trimmed from a captured page.
+PUSH_PAGE = """
+<script type="text/javascript">
+function fnResult() {
+	$.ajax({
+		url: "/ext/pass/UserCertPushChk.do",
+		type: "POST",
+		contentType: 'application/json',
+		data : JSON.stringify({ 'loginId' : '2024000000', 'tid' : 'c03db56f3c9d4842afd5333623471974', 'limit' : '1795492496562'}),
+	});
+}
+</script>
+"""
+CERT_INFO_REGISTERED = FakeResponse(
+    payload={
+        "loginId": None,
+        "returnCode": "0000",
+        "tid": None,
+        "limit": None,
+        "status": "1",
+        "issueDateTime": "2026-09-07 15:30:39",
+        "deviceOS": "I",
+        "deviceModel": "iPhone",
+    }
+)
+PUSH_APPROVED = FakeResponse(payload={"returnCode": "0000", "status": None})
+PUSH_PENDING = FakeResponse(payload={"returnCode": "9999", "status": None})
+
+
+def test_push_page_parser_reads_the_push_id():
+    assert kw_service._parse_push_page(PUSH_PAGE) == (
+        "c03db56f3c9d4842afd5333623471974",
+        "1795492496562",
+    )
+
+
+def test_push_page_parser_answers_none_without_a_push_id():
+    assert kw_service._parse_push_page("<html>세션이 만료되었습니다</html>") is None
+
+
+def _push_api(routes):
+    api = _login_api(routes)
+    api.login_id = "2024000000"
+    return api
+
+
+async def test_request_push_returns_the_push_id():
+    api = _push_api(
+        {
+            kw_service.CERT_INFO_URL: [CERT_INFO_REGISTERED],
+            kw_service.CERT_PUSH_PAGE_URL: [FakeResponse(text=PUSH_PAGE)],
+        }
+    )
+
+    push = await api.request_push()
+
+    assert push == kw_service.PushRequest(
+        kw_service.PushStatus.SENT,
+        tid="c03db56f3c9d4842afd5333623471974",
+        limit="1795492496562",
+    )
+    (cert_call,) = api.session.posts_to(kw_service.CERT_INFO_URL)
+    assert cert_call["json"]["userId"] == "2024000000UA"
+    assert cert_call["json"]["certOpt"] == "smart"
+    (page_call,) = api.session.posts_to(kw_service.CERT_PUSH_PAGE_URL)
+    assert page_call["params"] == {"loginId": "2024000000"}
+
+
+async def test_request_push_without_a_registered_phone():
+    """The KLAS page only offers the push when status is "1"."""
+    api = _push_api(
+        {
+            kw_service.CERT_INFO_URL: [
+                FakeResponse(payload={"returnCode": "0000", "status": "0"})
+            ],
+        }
+    )
+
+    push = await api.request_push()
+
+    assert push.status is kw_service.PushStatus.NO_DEVICE
+    assert api.session.posts_to(kw_service.CERT_PUSH_PAGE_URL) == []
+
+
+async def test_request_push_fails_when_the_page_has_no_push_id():
+    api = _push_api(
+        {
+            kw_service.CERT_INFO_URL: [CERT_INFO_REGISTERED],
+            kw_service.CERT_PUSH_PAGE_URL: [FakeResponse(text="<html></html>")],
+        }
+    )
+
+    assert (await api.request_push()).status is kw_service.PushStatus.FAILED
+
+
+async def test_request_push_before_login_fails_cleanly():
+    api = _login_api()
+
+    assert (await api.request_push()).status is kw_service.PushStatus.FAILED
+
+
+SENT_PUSH = kw_service.PushRequest(kw_service.PushStatus.SENT, tid="abc", limit="1")
+
+
+async def test_approved_push_finishes_the_login():
+    routes = _credential_routes(LOGGED_IN)
+    routes[kw_service.CERT_PUSH_CHECK_URL] = [PUSH_PENDING, PUSH_APPROVED]
+    api = _push_api(routes)
+
+    result = await api.wait_for_push_approval("pw", SENT_PUSH, interval=0)
+
+    assert result.status is kw_service.LoginStatus.OK
+    assert result.cookies == {"JSESSIONID": "fresh"}
+    (check_call, _) = api.session.posts_to(kw_service.CERT_PUSH_CHECK_URL)
+    assert check_call["json"] == {"loginId": "2024000000", "tid": "abc", "limit": "1"}
+    assert len(api.session.posts_to(kw_service.LOGIN_CONFIRM_URL)) == 1, (
+        "the password goes out again only once the push reads as approved"
+    )
+
+
+async def test_push_check_alone_is_not_trusted():
+    """If UserCertPushChk.do says approved but KLAS still wants the second
+    factor, the password is not resent forever."""
+    routes = _credential_routes(TWO_FACTOR_REQUIRED)
+    routes[kw_service.CERT_PUSH_CHECK_URL] = [PUSH_APPROVED]
+    api = _push_api(routes)
+
+    result = await api.wait_for_push_approval("pw", SENT_PUSH, interval=0)
+
+    assert result.status is kw_service.LoginStatus.FAILED
+    assert (
+        len(api.session.posts_to(kw_service.LOGIN_CONFIRM_URL))
+        == kw_service.MAX_CREDENTIAL_RESUBMITS
+    )
+
+
+async def test_unapproved_push_times_out():
+    api = _push_api({kw_service.CERT_PUSH_CHECK_URL: [PUSH_PENDING]})
+
+    result = await api.wait_for_push_approval(
+        "pw", SENT_PUSH, timeout=0.05, interval=0.01
+    )
+
+    assert result.status is kw_service.LoginStatus.TWO_FACTOR_REQUIRED
+    assert api.session.posts_to(kw_service.LOGIN_CONFIRM_URL) == []
+
+
+async def test_keep_alive_extends_a_live_session():
+    api = _login_api(form_url=FRAME_URL)
+
+    assert await api.keep_alive() is True
+    assert api.session.got[0] == kw_service.UPDATE_SESSION_URL
+    assert api.cookies == {"JSESSIONID": "fresh"}
+
+
+async def test_keep_alive_reports_a_dead_session():
+    api = _login_api(form_url=LOGIN_FORM_URL)
+
+    assert await api.keep_alive() is False
 
 
 QR_PAGE = (

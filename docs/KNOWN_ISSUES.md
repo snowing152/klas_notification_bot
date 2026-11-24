@@ -24,6 +24,22 @@ covered by [Voice and other media are refused](#voice-and-other-media-are-refuse
 - **Where:** `app/services/kw.py`, `qr.py`, `library.py`, `news.py`, `food.py`; the host
   table is in [ARCHITECTURE.md](ARCHITECTURE.md#what-it-talks-to).
 
+### KLAS logins need push approval, and the bot cannot finish them yet
+
+- **Symptom:** since November 2026 every KLAS login fails: `/register`, `/show` and
+  `/info` answer as if the password were wrong, notifications stop, and after three
+  cycles users get the "can't log into KLAS" message although their password is right.
+  Logs show `KLAS accepted the password but asks for push approval`.
+- **Cause:** KLAS now demands a second factor on every login, a push approved in the
+  KLAS phone app ([KLAS.md](KLAS.md#login-and-the-second-factor)). The client can run
+  that flow, but every caller still logs in from the stored password with nobody there
+  to approve, and no session is kept between operations.
+- **Workaround:** none. The fix in progress keeps one approved session per user alive
+  and asks the user to approve again only when it dies.
+- **Where:** `KwangwoonUniversityApi.login` and its callers in
+  `app/services/notifications.py`, `app/handlers/todos.py`,
+  `app/handlers/student_info.py` and `app/handlers/auth.py`.
+
 ### KW forces a password change every few months
 
 - **Symptom:** a user's notifications stop; after three failed cycles they get the

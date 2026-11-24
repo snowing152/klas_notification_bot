@@ -1,8 +1,12 @@
 import os
+import re
 import json
+import time
 import logging
 import asyncio
 import datetime
+from dataclasses import dataclass
+from enum import Enum
 from typing import Optional, Dict, List
 
 import aiohttp
@@ -31,8 +35,71 @@ REQUEST_TIMEOUT_SECONDS = 30
 # for, so the cap is on the process and not on one user's refresh.
 MAX_CONCURRENT_REQUESTS = 10
 # Module-level because every KwangwoonUniversityApi has to share it. Login is
-# not counted: its three requests run one after another.
+# not counted: its requests run one after another.
 _request_slots = asyncio.Semaphore(MAX_CONCURRENT_REQUESTS)
+
+KLAS_BASE_URL = "https://klas.kw.ac.kr"
+LOGIN_FORM_URL = f"{KLAS_BASE_URL}/usr/cmn/login/LoginForm.do"
+LOGIN_SECURITY_URL = f"{KLAS_BASE_URL}/usr/cmn/login/LoginSecurity.do"
+LOGIN_CAPTCHA_URL = f"{KLAS_BASE_URL}/usr/cmn/login/LoginCaptcha.do"
+LOGIN_CONFIRM_URL = f"{KLAS_BASE_URL}/usr/cmn/login/LoginConfirm.do"
+UPDATE_SESSION_URL = f"{KLAS_BASE_URL}/usr/cmn/login/UpdateSession.do"
+CERT_INFO_URL = f"{KLAS_BASE_URL}/ext/pass/UserCertInfoOne.do"
+CERT_PUSH_PAGE_URL = f"{KLAS_BASE_URL}/usr/cmn/cert/UserCertPushResult.do"
+CERT_PUSH_CHECK_URL = f"{KLAS_BASE_URL}/ext/pass/UserCertPushChk.do"
+
+# The KLAS answer that means "accepted" on every /ext/pass/ endpoint.
+CERT_OK = "0000"
+# How often, and for how long, to ask whether the student approved the push.
+# KLAS itself keeps a push valid for an hour, but nobody waits that long.
+PUSH_POLL_INTERVAL_SECONDS = 3
+PUSH_APPROVAL_TIMEOUT_SECONDS = 120
+# UserCertPushChk.do is only known to answer CERT_OK after an approval. If it
+# ever says so before one, the login that follows still asks for the second
+# factor; this caps how many times the password is sent again in that case.
+MAX_CREDENTIAL_RESUBMITS = 3
+
+# UserCertPushResult.do writes the push id and its expiry into an inline script:
+#   JSON.stringify({ 'loginId' : '...', 'tid' : '<hex>', 'limit' : '<epoch ms>'})
+_PUSH_TID_PATTERN = re.compile(r"""['"]tid['"]\s*:\s*['"]([0-9A-Za-z]+)['"]""")
+_PUSH_LIMIT_PATTERN = re.compile(r"""['"]limit['"]\s*:\s*['"](\d+)['"]""")
+
+
+class LoginStatus(Enum):
+    """How far a KLAS login got."""
+
+    OK = "ok"
+    # Password accepted; KLAS now wants the push approved in the KLAS app.
+    TWO_FACTOR_REQUIRED = "two_factor_required"
+    # Wrong credentials, a locked account, or KLAS could not be reached.
+    FAILED = "failed"
+
+
+@dataclass(frozen=True)
+class LoginResult:
+    """The outcome of a login step. `cookies` is set only for LoginStatus.OK."""
+
+    status: LoginStatus
+    cookies: Optional[Dict] = None
+
+
+class PushStatus(Enum):
+    """Whether KLAS sent the second-factor push to the student's phone."""
+
+    SENT = "sent"
+    # No phone is registered for push approval: the student has to install the
+    # KLAS app and register it first.
+    NO_DEVICE = "no_device"
+    FAILED = "failed"
+
+
+@dataclass(frozen=True)
+class PushRequest:
+    """One sent push. `tid` identifies it; `limit` is its expiry in epoch ms."""
+
+    status: PushStatus
+    tid: Optional[str] = None
+    limit: Optional[str] = None
 
 
 def _leaf_errors(error: BaseException) -> List[BaseException]:
@@ -40,6 +107,15 @@ def _leaf_errors(error: BaseException) -> List[BaseException]:
     if isinstance(error, BaseExceptionGroup):
         return [leaf for inner in error.exceptions for leaf in _leaf_errors(inner)]
     return [error]
+
+
+def _parse_push_page(html: str) -> Optional[tuple[str, str]]:
+    """Read (tid, limit) out of UserCertPushResult.do's inline script."""
+    tid = _PUSH_TID_PATTERN.search(html)
+    limit = _PUSH_LIMIT_PATTERN.search(html)
+    if not tid or not limit:
+        return None
+    return tid.group(1), limit.group(1)
 
 
 class KwangwoonUniversityApi:
@@ -141,41 +217,75 @@ class KwangwoonUniversityApi:
         """Log in and return the session cookies, or None if that failed.
 
         Never raises for a network fault: the callers treat a falsy answer as
-        "this user could not be read this time" and move on.
+        "this user could not be read this time" and move on. A login that
+        stops at the second factor also answers None; attempt_login() tells
+        the outcomes apart.
         """
-        login_form_url = "https://klas.kw.ac.kr/usr/cmn/login/LoginForm.do"
-        public_key_url = "https://klas.kw.ac.kr/usr/cmn/login/LoginSecurity.do"
-        login_url = "https://klas.kw.ac.kr/usr/cmn/login/LoginConfirm.do"
+        result = await self.attempt_login(login_id, login_pwd)
+        if result.status is LoginStatus.TWO_FACTOR_REQUIRED:
+            logging.warning(
+                "KLAS accepted the password but asks for push approval in the "
+                "KLAS app; this login cannot finish without the student"
+            )
+        return result.cookies if result.status is LoginStatus.OK else None
 
+    async def attempt_login(self, login_id: str, login_pwd: str) -> LoginResult:
+        """Run the KLAS login up to the second factor.
+
+        Reuses the session when the cookies already held are still valid.
+        Otherwise submits the credentials; on TWO_FACTOR_REQUIRED the caller
+        continues with request_push() and wait_for_push_approval() on this
+        same instance, because KLAS remembers the approval in the session.
+        Never raises for a network fault.
+        """
         self.login_id = login_id
 
         async def redirected_away_from_login_form(response) -> bool:
             # KLAS bounces us off the login form when the cookies we already
             # hold are still valid, so there is nothing left to log in to.
-            return str(response.url) != login_form_url
+            return str(response.url) != LOGIN_FORM_URL
+
+        try:
+            if await self._request_with_retries(
+                LOGIN_FORM_URL,
+                lambda: self.session.get(LOGIN_FORM_URL, cookies=self.cookies),
+                redirected_away_from_login_form,
+            ):
+                logging.info("Logged in with existing cookies.")
+                return LoginResult(LoginStatus.OK, self._cookies_from_jar())
+        except Exception as e:
+            logging.error(f"Could not open the KLAS login form: {e!r}")
+            return LoginResult(LoginStatus.FAILED)
+
+        return await self._submit_credentials(login_id, login_pwd)
+
+    async def _submit_credentials(self, login_id: str, login_pwd: str) -> LoginResult:
+        """Send the encrypted credentials the way the KLAS login page does.
+
+        LoginSecurity.do hands out a fresh RSA key per attempt, LoginCaptcha.do
+        is asked whether a captcha is due, and LoginConfirm.do decides. Run a
+        second time after the push was approved, the same calls finish the login.
+        """
 
         async def read_public_key(response) -> str:
             return (await response.json())["publicKey"]
 
+        async def read_captcha_answer(response) -> Optional[str]:
+            if response.status != 200:
+                logging.error(f"LoginCaptcha.do answered with status {response.status}")
+                return None
+            return (await response.text()).strip()
+
         async def read_login_result(response) -> Optional[Dict]:
             if response.status != 200:
-                logging.error("Failed to communicate with server.")
-                logging.error(f"Status code: {response.status}")
+                logging.error(f"LoginConfirm.do answered with status {response.status}")
                 return None
             return await response.json()
 
         try:
-            if await self._request_with_retries(
-                login_form_url,
-                lambda: self.session.get(login_form_url, cookies=self.cookies),
-                redirected_away_from_login_form,
-            ):
-                logging.info("Logged in with existing cookies.")
-                return self._cookies_from_jar()
-
             public_key_str = await self._request_with_retries(
-                public_key_url,
-                lambda: self.session.post(public_key_url),
+                LOGIN_SECURITY_URL,
+                lambda: self.session.post(LOGIN_SECURITY_URL),
                 read_public_key,
             )
 
@@ -183,47 +293,210 @@ class KwangwoonUniversityApi:
             encrypted_login = self._encryptor(public_key_str, json.dumps(login_data))
             if not encrypted_login:
                 logging.error("Encryption failed")
-                return None
+                return LoginResult(LoginStatus.FAILED)
+
+            captcha_answer = await self._request_with_retries(
+                LOGIN_CAPTCHA_URL,
+                lambda: self.session.post(
+                    LOGIN_CAPTCHA_URL,
+                    json={"loginToken": encrypted_login, "captcha": ""},
+                    headers=self.headers,
+                    cookies=self.cookies,
+                ),
+                read_captcha_answer,
+            )
+            # "0" is the only answer seen so far, on logins that needed no
+            # captcha. Anything else is logged and left to LoginConfirm.do to
+            # judge, which reports a missing captcha as an error of its own.
+            if captcha_answer != "0":
+                logging.warning(f"Unexpected LoginCaptcha.do answer: {captcha_answer!r}")
 
             login_body = {
                 "loginToken": encrypted_login,
+                "captcha": "",
                 "redirectUrl": "/std/cmn/frame/Frame.do",
                 "redirectTabUrl": "",
             }
-
             response_data = await self._request_with_retries(
-                login_url,
+                LOGIN_CONFIRM_URL,
                 lambda: self.session.post(
-                    login_url,
+                    LOGIN_CONFIRM_URL,
                     json=login_body,
                     headers=self.headers,
                     cookies=self.cookies,
                 ),
                 read_login_result,
             )
-            if response_data is None:
-                return None
-
-            if response_data.get("errorCount", 0) == 0:
-                logging.debug("Login successful.")
-                return self._cookies_from_jar()
-            elif (
-                response_data.get("fieldErrors")[0].get("message")
-                == "비밀번호 실패 5회 초과로 인하여 계정이 잠겼습니다.\n비밀번호 찾기를 이용해주세요."
-            ):
-                logging.error(
-                    "Login failed. Enter wrong password 5 times. Please reset password."
-                )
-                return None
-            else:
-                logging.error(
-                    "Failed to parse response. Login failed. Wrong password or ID"
-                )
-                return None
-
         except Exception as e:
-            logging.error(f"An error occurred: {e}")
-            return None
+            logging.error(f"An error occurred during KLAS login: {e!r}")
+            return LoginResult(LoginStatus.FAILED)
+
+        return self._read_login_confirm(response_data)
+
+    def _read_login_confirm(self, response_data: Optional[Dict]) -> LoginResult:
+        """Turn LoginConfirm.do's answer into a LoginResult.
+
+        A password that is right but still needs the push answers
+        errorCount 0 with response.twoFactorAt "Y". It used to be read as a
+        finished login, so every later request ran on a half-open session.
+        """
+        if not isinstance(response_data, dict):
+            return LoginResult(LoginStatus.FAILED)
+
+        if response_data.get("errorCount", 0) == 0:
+            details = response_data.get("response") or {}
+            if details.get("twoFactorAt") == "Y":
+                return LoginResult(LoginStatus.TWO_FACTOR_REQUIRED)
+            logging.debug("Login successful.")
+            return LoginResult(LoginStatus.OK, self._cookies_from_jar())
+
+        field_errors = response_data.get("fieldErrors") or []
+        message = field_errors[0].get("message", "") if field_errors else ""
+        if "계정이 잠겼습니다" in message:
+            logging.error(
+                "Login failed. Enter wrong password 5 times. Please reset password."
+            )
+        else:
+            logging.error("Login failed. Wrong password or ID")
+        return LoginResult(LoginStatus.FAILED)
+
+    async def request_push(self) -> PushRequest:
+        """Ask KLAS to send the second-factor push to the student's phone.
+
+        Call after attempt_login() answered TWO_FACTOR_REQUIRED. Loading
+        UserCertPushResult.do is what sends the push; the page carries the
+        push id that wait_for_push_approval() needs. Never raises.
+        """
+        if not self.login_id:
+            logging.error("request_push called before attempt_login")
+            return PushRequest(PushStatus.FAILED)
+
+        cert_body = {
+            "certResultAt": "N",
+            "certiGubun": "eml",
+            "gubun": "E",
+            "type": "LOGIN",
+            "userId": f"{self.login_id}UA",
+            "loginId": self.login_id,
+            "inputKey": "",
+            "certOpt": "smart",
+        }
+
+        async def read_push_page(response) -> Optional[str]:
+            if response.status != 200:
+                logging.error(
+                    f"UserCertPushResult.do answered with status {response.status}"
+                )
+                return None
+            # The page is EUC-KR; only the ASCII push id is read from it.
+            return await response.text(errors="replace")
+
+        try:
+            cert_info = await self._post_json(CERT_INFO_URL, cert_body, self.headers)
+            if not isinstance(cert_info, dict) or cert_info.get("returnCode") != CERT_OK:
+                logging.error("UserCertInfoOne.do did not accept the request")
+                return PushRequest(PushStatus.FAILED)
+            # The KLAS page itself only offers the push when status is "1",
+            # and otherwise sends the student off to register the app.
+            if cert_info.get("status") != "1":
+                logging.info("No phone is registered for KLAS push approval")
+                return PushRequest(PushStatus.NO_DEVICE)
+
+            html = await self._request_with_retries(
+                CERT_PUSH_PAGE_URL,
+                lambda: self.session.post(
+                    CERT_PUSH_PAGE_URL,
+                    params={"loginId": self.login_id},
+                    data={"modalId": "ax5-modal-1"},
+                    cookies=self.cookies,
+                ),
+                read_push_page,
+            )
+        except Exception as e:
+            logging.error(f"Could not send the KLAS push: {e!r}")
+            return PushRequest(PushStatus.FAILED)
+
+        parsed = _parse_push_page(html) if html else None
+        if not parsed:
+            logging.error("UserCertPushResult.do carried no push id")
+            return PushRequest(PushStatus.FAILED)
+        tid, limit = parsed
+        return PushRequest(PushStatus.SENT, tid=tid, limit=limit)
+
+    async def check_push(self, push: PushRequest) -> bool:
+        """Whether KLAS reports the push as approved. Never raises."""
+        body = {"loginId": self.login_id, "tid": push.tid, "limit": push.limit}
+        try:
+            answer = await self._post_json(CERT_PUSH_CHECK_URL, body, self.headers)
+        except Exception as e:
+            logging.warning(f"Could not check the KLAS push: {e!r}")
+            return False
+        return isinstance(answer, dict) and answer.get("returnCode") == CERT_OK
+
+    async def wait_for_push_approval(
+        self,
+        login_pwd: str,
+        push: PushRequest,
+        timeout: float = PUSH_APPROVAL_TIMEOUT_SECONDS,
+        interval: float = PUSH_POLL_INTERVAL_SECONDS,
+    ) -> LoginResult:
+        """Wait for the student to approve the push, then finish the login.
+
+        Only the second LoginConfirm.do proves the approval: UserCertPushChk.do
+        is a hint for when to try it. Answers TWO_FACTOR_REQUIRED when the time
+        ran out without an approval, FAILED when KLAS rejected the login.
+        """
+        deadline = time.monotonic() + timeout
+        resubmits = 0
+        while time.monotonic() < deadline:
+            if await self.check_push(push):
+                result = await self._submit_credentials(self.login_id, login_pwd)
+                if result.status is not LoginStatus.TWO_FACTOR_REQUIRED:
+                    return result
+                resubmits += 1
+                if resubmits >= MAX_CREDENTIAL_RESUBMITS:
+                    logging.warning(
+                        "UserCertPushChk.do reports the push approved, but KLAS "
+                        "still asks for the second factor"
+                    )
+                    return LoginResult(LoginStatus.FAILED)
+            await asyncio.sleep(interval)
+
+        logging.info("The KLAS push was not approved in time")
+        return LoginResult(LoginStatus.TWO_FACTOR_REQUIRED)
+
+    async def keep_alive(self) -> bool:
+        """Extend the KLAS session and report whether it is still logged in.
+
+        KLAS ends a session after two idle hours; UpdateSession.do is what its
+        own "extend" button calls to reset that timer. Liveness is then read
+        the same way attempt_login() reads it: a valid session is redirected
+        away from the login form. Never raises.
+        """
+        try:
+            async with self.session.get(
+                UPDATE_SESSION_URL, headers=self.headers, cookies=self.cookies
+            ) as response:
+                if response.status not in (200, 304):
+                    logging.warning(
+                        f"UpdateSession.do answered with status {response.status}"
+                    )
+
+            async def still_logged_in(response) -> bool:
+                return str(response.url) != LOGIN_FORM_URL
+
+            alive = await self._request_with_retries(
+                LOGIN_FORM_URL,
+                lambda: self.session.get(LOGIN_FORM_URL, cookies=self.cookies),
+                still_logged_in,
+            )
+        except Exception as e:
+            logging.warning(f"Could not extend the KLAS session: {e!r}")
+            return False
+
+        if alive:
+            self._cookies_from_jar()
+        return alive
 
     async def _post_json(
         self, url: str, body: dict, headers: Optional[dict] = None
