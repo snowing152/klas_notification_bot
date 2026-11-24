@@ -75,7 +75,10 @@ def _pending(items: list[dict], now) -> list[dict]:
 
 
 async def _load_items(user_id: str) -> tuple[str, list[dict] | None]:
-    """(status, items). status is "no_user", "needs_login", "unavailable" or "ok"."""
+    """(status, items).
+
+    status is "no_user", "needs_login", "password_rejected", "unavailable" or "ok".
+    """
     cached = _items_cache.get(user_id)
     if cached and time.monotonic() - cached[0] < CACHE_TTL_SECONDS:
         return "ok", cached[1]
@@ -87,6 +90,8 @@ async def _load_items(user_id: str) -> tuple[str, list[dict] | None]:
     async with open_session(user) as access:
         if access.status is SessionStatus.NEEDS_LOGIN:
             return "needs_login", None
+        if access.status is SessionStatus.PASSWORD_REJECTED:
+            return "password_rejected", None
         if access.status is SessionStatus.UNAVAILABLE:
             return "unavailable", None
         todo_list = await access.api.get_todo_list()
@@ -191,6 +196,9 @@ async def show_all_assignments(message: types.Message):
                 reply_markup=create_klas_relogin_keyboard(user_lang),
             )
             return
+        if status == "password_rejected":
+            await message.answer(Strings.get("credentials_expired", user_lang))
+            return
         if status == "unavailable":
             await message.answer(Strings.get("klas_unavailable", user_lang))
             return
@@ -223,6 +231,12 @@ async def process_show_filter_callback(callback_query: types.CallbackQuery):
             await callback_query.message.answer(
                 Strings.get("klas_login_required", user_lang),
                 reply_markup=create_klas_relogin_keyboard(user_lang),
+            )
+            await callback_query.answer()
+            return
+        if status == "password_rejected":
+            await callback_query.message.answer(
+                Strings.get("credentials_expired", user_lang)
             )
             await callback_query.answer()
             return

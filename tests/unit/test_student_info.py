@@ -127,3 +127,16 @@ async def test_missing_student_info_reports_the_fetch_failure():
     bot.send_message.assert_awaited_once_with(
         42, Strings.get("failed_to_fetch_student_info", Language.EN)
     )
+
+
+@pytest.mark.asyncio
+async def test_a_rejected_password_says_to_register_again():
+    await save_user("803", "student803", "enc", Language.EN)
+    bot = AsyncMock()
+
+    with patch_session(None, SessionStatus.PASSWORD_REJECTED):
+        await send_student_info(bot, chat_id=42, user_id="803", user_lang=Language.EN)
+
+    bot.send_message.assert_awaited_once_with(
+        42, Strings.get("credentials_expired", Language.EN)
+    )

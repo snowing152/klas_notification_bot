@@ -41,6 +41,9 @@ async def send_student_info(bot, chat_id: int, user_id: str, user_lang) -> None:
                 reply_markup=create_klas_relogin_keyboard(user_lang),
             )
             return
+        if access.status is SessionStatus.PASSWORD_REJECTED:
+            await bot.send_message(chat_id, Strings.get("credentials_expired", user_lang))
+            return
         if access.status is SessionStatus.UNAVAILABLE:
             await bot.send_message(chat_id, Strings.get("klas_unavailable", user_lang))
             return

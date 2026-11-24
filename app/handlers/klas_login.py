@@ -1,6 +1,6 @@
 """A KLAS login the student approves on their phone, run from a chat.
 
-KLAS asks for push approval in its app on every login (docs/KLAS.md). This
+KLAS often asks for push approval in its app (docs/KLAS.md). This
 module runs that flow for one user and tells them in the chat what to do and
 how it went. Only a user action starts it - /register or the "Log in to KLAS"
 button - never the notification loop: a push nobody asked for every half

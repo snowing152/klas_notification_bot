@@ -110,9 +110,10 @@ matched to handlers is in [LOCALIZATION.md](LOCALIZATION.md#quick-access-buttons
 
 `app/services/kw.py` (`KwangwoonUniversityApi`) is an async context manager
 — always use `async with`, one instance per operation. What lasts between operations is
-the user's KLAS *login*: KLAS asks for push approval in its app on every login, so
-`app/services/klas_session.py` keeps one approved session per user in SQLite and every
-operation continues it through `open_session()` instead of logging in
+the user's KLAS *login*: KLAS often asks for push approval in its app, so
+`app/services/klas_session.py` keeps one working session per user in SQLite and every
+operation continues it through `open_session()`, which logs in silently (never with a
+push) only when the kept session is gone
 ([KLAS.md](KLAS.md#login-and-the-second-factor)). `app/services/qr.py` instead keeps
 a module-level shared `aiohttp` session that `main.py` closes in its `finally`.
 

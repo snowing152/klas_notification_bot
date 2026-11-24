@@ -447,3 +447,32 @@ async def test_a_deadline_that_passes_while_cached_drops_out_of_the_list():
     assert api.calls["todo"] == 1
     assert "Due in a minute" not in later.answer.call_args[0][0]
     assert "Week 3" in later.answer.call_args[0][0]
+
+
+@pytest.mark.asyncio
+async def test_a_rejected_password_says_to_register_again():
+    """No login button: tapping it would only resend the password KLAS refused."""
+    await _register("717")
+
+    with patch_session(None, SessionStatus.PASSWORD_REJECTED):
+        message = make_message(user_id="717")
+        await show_all_assignments(message)
+
+    assert message.answer.call_args[0][0] == Strings.get(
+        "credentials_expired", Language.EN
+    )
+    assert message.answer.call_args.kwargs.get("reply_markup") is None
+
+
+@pytest.mark.asyncio
+async def test_filter_tap_with_a_rejected_password_says_to_register_again():
+    await _register("718")
+
+    with patch_session(None, SessionStatus.PASSWORD_REJECTED):
+        callback = make_callback("show_lectures", user_id="718")
+        await process_show_filter_callback(callback)
+
+    callback.message.answer.assert_awaited_once_with(
+        Strings.get("credentials_expired", Language.EN)
+    )
+    callback.message.edit_text.assert_not_called()

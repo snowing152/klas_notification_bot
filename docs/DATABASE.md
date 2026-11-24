@@ -21,7 +21,7 @@ Every `user_id` is the Telegram user id, stored as a string.
 | Table | Model | Holds |
 |---|---|---|
 | `users` | `User` | KLAS login (the student number), Fernet-encrypted KLAS password, language (`EN`/`KO`/`RU`) |
-| `klas_sessions` | `KlasSession` | the kept KLAS session: encrypted cookies, `needs_login`, `login_prompt_sent`, `password_rejected`, when it was logged in and last used |
+| `klas_sessions` | `KlasSession` | the kept KLAS session: encrypted cookies, `needs_login`, `login_prompt_sent`, `password_rejected`, `two_factor_required`, when it was logged in and last used |
 | `library_users` | `LibraryUser` | library login, encrypted library password, phone number |
 | `sent_notifications` | `SentNotification` | one row per (user, assignment key, kind) already delivered |
 | `notification_state` | `NotificationState` | `seeded`; `login_failures` and `credentials_warned` are no longer written |

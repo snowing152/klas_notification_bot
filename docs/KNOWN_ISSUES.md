@@ -28,9 +28,10 @@ covered by [Voice and other media are refused](#voice-and-other-media-are-refuse
 
 - **Symptom:** a user gets the "log in to KLAS again" message and their notifications
   pause until they tap the button and approve the push. After a downtime of more than
-  two hours every user gets it at once.
-- **Cause:** KLAS asks for push approval on every login, so the bot keeps one session
-  per user alive instead of logging in ([KLAS.md](KLAS.md#login-and-the-second-factor)).
+  two hours many users get it at once.
+- **Cause:** KLAS often asks for push approval when the bot logs in, so the bot keeps
+  one session per user alive and, when it dies, tries one silent login before asking
+  ([KLAS.md](KLAS.md#login-and-the-second-factor)).
   KLAS ends a session after two idle hours; the 30-minute notification cycle keeps it
   alive only while the bot runs. Whether KLAS also ends sessions after some fixed time,
   or when the student logs in elsewhere, is not known yet.

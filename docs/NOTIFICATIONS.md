@@ -22,11 +22,13 @@ One cycle, per user (`_process_user`):
 1. Read the user's language, `notification_state`, `user_settings` and everything
    already sent. If the history cannot be read the user is skipped — sending blind would
    repeat what they already have.
-2. `open_session(user)` (`app/services/klas_session.py`). KLAS wants push approval on
-   every login, so the cycle never logs in; it extends the session the user approved
-   earlier. `UNAVAILABLE` (KLAS unreachable) is a failed user. `NEEDS_LOGIN` ends the
-   user's cycle as a success: once, outside quiet hours, they get `klas_login_required`
-   with a "Log in to KLAS" button and `klas_sessions.login_prompt_sent` is set (only after
+2. `open_session(user)` (`app/services/klas_session.py`). It extends the user's kept
+   session, and when there is none it tries one silent login (no push;
+   [KLAS.md](KLAS.md#login-and-the-second-factor)). The cycle itself never sends a push.
+   `UNAVAILABLE` (KLAS unreachable) is a failed user. `NEEDS_LOGIN` and
+   `PASSWORD_REJECTED` end the user's cycle as a success: once, outside quiet hours, they
+   get `klas_login_required` with a "Log in to KLAS" button, or `credentials_expired`
+   without one and `klas_sessions.login_prompt_sent` is set (only after
    Telegram accepted it; a successful login resets it). Existing users have no session row
    after this shipped, so each got one prompt on the first daytime cycle.
 3. `get_todo_list()`. `None` means KLAS could not be read (a failed user); `[]` means no
@@ -112,8 +114,9 @@ Rules that follow from this, and that a change here has to keep:
 
 ## The login prompt
 
-A wrong or expired saved password is no longer found by the cycle; it shows when the user
-taps the login button. The prompt is one message per lost session, not per cycle. Quiet
+A wrong or expired saved password is found by the silent login (or by the login button)
+and answered with `credentials_expired`, which points to `/register`. The prompt is one
+message per lost session, not per cycle. Quiet
 hours hold it (it is not recorded, so it goes out on the first daytime cycle).
 
 ## Settings

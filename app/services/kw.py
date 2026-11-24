@@ -487,6 +487,11 @@ class KwangwoonUniversityApi:
         self.session.cookie_jar.update_cookies(cookies, URL(KLAS_BASE_URL))
         self.cookies = dict(cookies)
 
+    def forget_cookies(self) -> None:
+        """Drop a dead session's cookies before logging in on this client."""
+        self.session.cookie_jar.clear()
+        self.cookies = {}
+
     def klas_cookies(self) -> Dict:
         """The cookies KLAS would receive, to be stored for the next operation.
 

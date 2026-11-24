@@ -12,9 +12,12 @@ user could not be read this time", and every caller checks it.
 
 ### Login and the second factor
 
-Since November 2026 KLAS asks for a second factor on **every** login, in the same
-browser too: a push the student approves in the KLAS phone app. The flow, captured from
-a browser login on 2026-11-24:
+Since November 2026 KLAS can ask for a second factor on a login: a push the student
+approves in the KLAS phone app. It does not ask every time, and the rule is unknown. On
+2026-11-24 the browser was asked on every login, and two script runs from the same PC
+minutes apart got one login without and one with the push; the production server is
+asked. Code must handle both answers. The flow, captured from a browser login on
+2026-11-24:
 
 1. `LoginSecurity.do` hands out a fresh RSA public key; the credentials are encrypted
    with it (PKCS#1 v1.5, what the page's jsencrypt uses) into `loginToken`.
@@ -55,10 +58,20 @@ to find out.
 
 `app/services/klas_session.py` keeps one session per user between operations.
 `open_session(user)` restores the stored cookies, calls `keep_alive()`, and yields
-`ACTIVE` with a client, `NEEDS_LOGIN` (no session, or KLAS ended it) or `UNAVAILABLE`
-(KLAS unreachable). It never logs in. The cookies are written back on the way out, since
-KLAS may rotate them, and `save_new_session()` stores the session of a login the student
-just approved.
+`ACTIVE` with a client, `NEEDS_LOGIN`, `PASSWORD_REJECTED` or `UNAVAILABLE` (KLAS
+unreachable). The cookies are written back on the way out, since KLAS may rotate them,
+and `save_new_session()` stores the session of a login the student just approved.
+
+When there is no live session, `open_session` first tries a **silent login**: the saved
+password through `attempt_login()` only, which never sends a push. If KLAS lets it in,
+the new session is stored and the caller never notices. If KLAS wants the push,
+`klas_sessions.two_factor_required` is set and the answer is `NEEDS_LOGIN`; if it
+rejects the password, `password_rejected` is set and the answer is `PASSWORD_REJECTED`.
+Either flag stops further silent tries until the student logs in or re-registers, so a
+lost session costs one silent login, not one every cycle, and a rejected password is
+never resent (KLAS locks the account after five). A session replaced by a newer login
+while it was being checked answers `UNAVAILABLE` for that one operation rather than
+logging in over it.
 
 `app/handlers/klas_login.py` (`run_push_login`) runs a whole login from a chat: it sends
 the push, tells the student to approve it, waits, stores the session, and explains a

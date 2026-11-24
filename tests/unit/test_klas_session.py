@@ -7,6 +7,7 @@ from cryptography.fernet import Fernet
 from app.database.database import get_klas_session, save_user, update_klas_session
 from app.services import klas_session
 from app.services.klas_session import SessionStatus, open_session
+from app.services.kw import LoginResult, LoginStatus
 from app.strings import Language
 from app.utils import encryption
 
@@ -29,19 +30,39 @@ class FakeUser:
     def __init__(self, user_id="42", username="2024000000"):
         self.user_id = user_id
         self.username = username
+        self.encrypted_password = encryption.encrypt_password("pw")
+
+
+TWO_FACTOR = LoginResult(LoginStatus.TWO_FACTOR_REQUIRED)
 
 
 class FakeApi:
-    """Stands in for KwangwoonUniversityApi; `alive` is what keep_alive says."""
+    """Stands in for KwangwoonUniversityApi.
+
+    `alive` is what keep_alive says, `login` what a silent login answers.
+    The default login asks for the push, which is what the bot meets from a
+    server KLAS does not trust.
+    """
 
     instances = []
 
-    def __init__(self, alive=True, cookies_after=None):
+    def __init__(self, alive=True, cookies_after=None, login=TWO_FACTOR):
         self.alive = alive
         self.cookies_after = cookies_after
+        self.login = login
         self.restored = None
         self.login_id = None
+        self.logins = []
         FakeApi.instances.append(self)
+
+    async def attempt_login(self, login_id, password):
+        self.logins.append((login_id, password))
+        if self.login.status is LoginStatus.OK:
+            self.restored = {"JSESSIONID": "silent"}
+        return self.login
+
+    def forget_cookies(self):
+        self.restored = None
 
     async def __aenter__(self):
         return self
@@ -74,13 +95,91 @@ async def _stored_cookies(user_id):
     return json.loads(encryption.decrypt_secret(row.encrypted_cookies))
 
 
-async def test_without_a_stored_session_a_login_is_needed(fake_api):
+def _logins():
+    return [login for api in FakeApi.instances for login in api.logins]
+
+
+async def test_without_a_session_and_with_the_push_required_a_login_is_needed(fake_api):
     fake_api()
 
     async with open_session(FakeUser()) as access:
         assert access.status is SessionStatus.NEEDS_LOGIN
         assert access.api is None
-    assert FakeApi.instances == [], "no request goes out without a session"
+
+    assert _logins() == [("2024000000", "pw")]
+    row = await get_klas_session("42")
+    assert row.two_factor_required is True
+
+
+async def test_a_silent_login_replaces_a_missing_session(fake_api, fixed_now):
+    """Where KLAS lets the bot in without a push, the student never notices."""
+    fake_api(login=LoginResult(LoginStatus.OK, {"JSESSIONID": "silent"}))
+
+    async with open_session(FakeUser()) as access:
+        assert access.status is SessionStatus.ACTIVE
+
+    row = await get_klas_session("42")
+    assert row.logged_in_at == fixed_now
+    assert await _stored_cookies("42") == {"JSESSIONID": "silent"}
+
+
+async def test_a_silent_login_replaces_a_dead_session(fake_api):
+    await klas_session.save_new_session("42", {"JSESSIONID": "old"})
+    fake_api(alive=False, login=LoginResult(LoginStatus.OK, {"JSESSIONID": "silent"}))
+
+    async with open_session(FakeUser()) as access:
+        assert access.status is SessionStatus.ACTIVE
+
+    assert await _stored_cookies("42") == {"JSESSIONID": "silent"}
+
+
+async def test_once_the_push_was_required_the_password_is_not_sent_again(fake_api):
+    """Not every 30 minutes: one try per lost session."""
+    fake_api()
+    async with open_session(FakeUser()):
+        pass
+
+    fake_api()
+    async with open_session(FakeUser()) as access:
+        assert access.status is SessionStatus.NEEDS_LOGIN
+
+    assert len(_logins()) == 1
+
+
+async def test_a_rejected_password_is_not_sent_again(fake_api):
+    """KLAS locks the account after five wrong passwords."""
+    fake_api(login=LoginResult(LoginStatus.FAILED))
+    async with open_session(FakeUser()) as access:
+        assert access.status is SessionStatus.PASSWORD_REJECTED
+
+    fake_api(login=LoginResult(LoginStatus.FAILED))
+    async with open_session(FakeUser()) as access:
+        assert access.status is SessionStatus.PASSWORD_REJECTED
+
+    assert len(_logins()) == 1
+    assert (await get_klas_session("42")).password_rejected is True
+
+
+async def test_unreachable_klas_during_a_silent_login_is_retried_later(fake_api):
+    fake_api(login=LoginResult(LoginStatus.UNAVAILABLE))
+    async with open_session(FakeUser()) as access:
+        assert access.status is SessionStatus.UNAVAILABLE
+
+    fake_api(login=LoginResult(LoginStatus.UNAVAILABLE))
+    async with open_session(FakeUser()):
+        pass
+
+    assert len(_logins()) == 2, "an outage says nothing; nothing stops the next try"
+
+
+async def test_an_approved_login_allows_silent_logins_again(fake_api):
+    fake_api()
+    async with open_session(FakeUser()):
+        pass
+
+    await klas_session.save_new_session("42", {"JSESSIONID": "approved"})
+
+    assert (await get_klas_session("42")).two_factor_required is False
 
 
 async def test_a_live_session_is_reused_and_written_back(fake_api, fixed_now):
@@ -226,10 +325,14 @@ async def test_a_dead_old_session_does_not_end_a_newer_login(fake_api, monkeypat
     FakeApi.keep_alive = lambda self: newer_login_then_dead()
     try:
         async with open_session(FakeUser()) as access:
-            assert access.status is SessionStatus.NEEDS_LOGIN
+            # Not NEEDS_LOGIN: the student just logged in, and asking them to
+            # do it again would be wrong. The next operation uses the new one.
+            assert access.status is SessionStatus.UNAVAILABLE
     finally:
         del FakeApi.keep_alive
 
     row = await get_klas_session("42")
     assert row.needs_login is False
+    assert row.two_factor_required is False
     assert await _stored_cookies("42") == {"JSESSIONID": "newer"}
+    assert _logins() == [], "no silent login over a session replaced meanwhile"

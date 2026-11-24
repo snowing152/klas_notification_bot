@@ -177,12 +177,15 @@ async def start_notification_service():
         logging.error(f"Notification task failed: {e}")
 
 
-async def _ask_for_login(user_id: str, user_lang: Language, user_settings) -> None:
-    """Ask the user, once, to approve a new KLAS login.
+async def _ask_for_login(
+    user_id: str, user_lang: Language, user_settings, status: SessionStatus
+) -> None:
+    """Tell the user, once, what it takes to get KLAS read again.
 
-    The bot never starts a login itself: KLAS sends a push to the student's
-    phone on every one, so an unprompted login would be a surprise approval
-    request. The user taps the button instead.
+    NEEDS_LOGIN: approve a login. The bot never sends the push itself - an
+    unprompted one would be a surprise approval request on the student's
+    phone - so the message carries the button that does. PASSWORD_REJECTED:
+    the saved password stopped working, and only /register fixes that.
     """
     row = await get_klas_session(user_id)
     if row is not None and row.login_prompt_sent:
@@ -194,12 +197,19 @@ async def _ask_for_login(user_id: str, user_lang: Language, user_settings) -> No
         logging.info(f"KLAS login prompt for {user_id} held (quiet hours)")
         return
 
-    sent = await _send(
-        Strings.get("klas_login_required", user_lang),
-        user_id,
-        " (KLAS login required)",
-        reply_markup=create_klas_relogin_keyboard(user_lang),
-    )
+    if status is SessionStatus.PASSWORD_REJECTED:
+        sent = await _send(
+            Strings.get("credentials_expired", user_lang),
+            user_id,
+            " (KLAS password rejected)",
+        )
+    else:
+        sent = await _send(
+            Strings.get("klas_login_required", user_lang),
+            user_id,
+            " (KLAS login required)",
+            reply_markup=create_klas_relogin_keyboard(user_lang),
+        )
     if sent:
         await set_login_prompt_sent(user_id)
 
@@ -366,13 +376,17 @@ async def _process_user(user) -> tuple[bool, int]:
                 logging.warning(f"KLAS unavailable for user {user_id}")
                 return False, 0
 
-            if access.status is SessionStatus.NEEDS_LOGIN:
-                # Existing users have no session row after this shipped, so
-                # each gets one prompt on the first daytime cycle; intended.
-                # Not a failed check: counting everyone who is waiting to
-                # approve would turn every cycle summary into a warning.
-                logging.info(f"User {user_id} needs to log in to KLAS again")
-                await _ask_for_login(user_id, user_lang, user_settings)
+            if access.status in (
+                SessionStatus.NEEDS_LOGIN,
+                SessionStatus.PASSWORD_REJECTED,
+            ):
+                # open_session already tried a silent login, so this user
+                # really has to act. Existing users have no session row after
+                # this shipped; where KLAS wants the push, each gets one prompt
+                # on the first daytime cycle. Not a failed check: counting
+                # everyone who has to act would make every summary a warning.
+                logging.info(f"User {user_id} has to act before KLAS can be read")
+                await _ask_for_login(user_id, user_lang, user_settings, access.status)
                 return True, 0
 
             todo_list = await access.api.get_todo_list()

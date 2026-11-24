@@ -743,3 +743,17 @@ def test_format_left_time_keeps_a_zero_hour_under_a_day_count():
         == "3h 20m"
     )
     assert notifications.format_left_time(datetime.timedelta(minutes=45)) == "45m"
+
+
+async def test_a_rejected_password_asks_for_register_once_without_a_button(monkeypatch):
+    """The button would only resend the password KLAS refused."""
+    bot = _patch_user_deps(monkeypatch, None, status=SessionStatus.PASSWORD_REJECTED)
+
+    assert await notifications._process_user(FakeUser("1")) == (True, 0)
+    await notifications._process_user(FakeUser("1"))
+
+    assert [text for _, text in bot.sent] == [
+        Strings.get("credentials_expired", Language.EN)
+    ]
+    assert bot.markups == [None]
+    assert await _prompt_sent()
