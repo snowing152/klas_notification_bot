@@ -6,6 +6,7 @@ from contextlib import asynccontextmanager
 import pytest
 
 from app.database.database import (
+    save_user,
     get_klas_session,
     get_notification_state,
     get_sent_notifications,
@@ -475,6 +476,7 @@ async def test_a_partial_read_still_sends_what_it_did_read(monkeypatch):
 
 
 async def test_the_first_cycle_does_not_seed_from_a_partial_read(monkeypatch):
+    await _registered()
     """Seeding records what exists so that it is never announced. Seeded from
     a read with a category missing, that category arrives as new one cycle
     later - the dump of a semester seeding exists to prevent."""
@@ -492,6 +494,11 @@ async def test_the_first_cycle_does_not_seed_from_a_partial_read(monkeypatch):
     assert (await get_notification_state("1")).seeded is True
 
 
+async def _registered(user_id="1"):
+    """Session rows, the prompt flag among them, exist only for registered users."""
+    await save_user(user_id, "student", b"encrypted", Language.EN)
+
+
 def _needs_login(monkeypatch, hour=12, bot=None):
     return _patch_user_deps(
         monkeypatch, None, bot=bot, hour=hour, status=SessionStatus.NEEDS_LOGIN
@@ -504,6 +511,7 @@ async def _prompt_sent(user_id="1") -> bool:
 
 
 async def test_a_user_who_must_log_in_is_asked_once_with_the_button(monkeypatch):
+    await _registered()
     bot = _needs_login(monkeypatch)
 
     assert await notifications._process_user(FakeUser("1")) == (True, 0)
@@ -516,6 +524,7 @@ async def test_a_user_who_must_log_in_is_asked_once_with_the_button(monkeypatch)
 
 
 async def test_the_login_prompt_is_not_repeated_every_cycle(monkeypatch):
+    await _registered()
     bot = _needs_login(monkeypatch)
     await notifications._process_user(FakeUser("1"))
     await notifications._process_user(FakeUser("1"))
@@ -524,6 +533,7 @@ async def test_the_login_prompt_is_not_repeated_every_cycle(monkeypatch):
 
 
 async def test_no_prompt_when_one_was_already_sent(monkeypatch):
+    await _registered()
     await update_klas_session("1", needs_login=True, login_prompt_sent=True)
     bot = _needs_login(monkeypatch)
 
@@ -532,6 +542,7 @@ async def test_no_prompt_when_one_was_already_sent(monkeypatch):
 
 
 async def test_the_login_prompt_is_held_during_quiet_hours(monkeypatch):
+    await _registered()
     bot = _needs_login(monkeypatch, hour=3)
 
     assert await notifications._process_user(FakeUser("1")) == (True, 0)
@@ -545,6 +556,7 @@ async def test_the_login_prompt_is_held_during_quiet_hours(monkeypatch):
 
 
 async def test_the_login_prompt_is_not_recorded_when_telegram_refused(monkeypatch):
+    await _registered()
     _needs_login(monkeypatch, bot=FakeBot(fail=True))
 
     assert await notifications._process_user(FakeUser("1")) == (True, 0)
@@ -746,6 +758,7 @@ def test_format_left_time_keeps_a_zero_hour_under_a_day_count():
 
 
 async def test_a_rejected_password_asks_for_register_once_without_a_button(monkeypatch):
+    await _registered()
     """The button would only resend the password KLAS refused."""
     bot = _patch_user_deps(monkeypatch, None, status=SessionStatus.PASSWORD_REJECTED)
 

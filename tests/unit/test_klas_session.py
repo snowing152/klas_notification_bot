@@ -19,6 +19,12 @@ def throwaway_key(monkeypatch):
     monkeypatch.setattr(encryption, "_cipher", lambda: cipher)
 
 
+@pytest.fixture(autouse=True)
+async def registered_user():
+    """Session rows are only written for registered users."""
+    await save_user("42", "2024000000", b"encrypted", Language.EN)
+
+
 @pytest.fixture
 def fixed_now(monkeypatch):
     now = datetime.datetime(2026, 11, 24, 12, 0)
@@ -269,7 +275,6 @@ async def test_a_new_login_clears_the_prompt_flag(fake_api, fixed_now):
 async def test_deleting_a_users_data_drops_their_klas_session():
     from app.handlers.auth import delete_all_user_data
 
-    await save_user("42", "2024000000", b"encrypted", Language.EN)
     await klas_session.save_new_session("42", {"JSESSIONID": "s"})
 
     await delete_all_user_data("42")
@@ -282,7 +287,6 @@ async def test_an_operation_does_not_bring_back_a_deleted_session(fake_api):
     row, leaving a live session nothing would ever clear."""
     from app.handlers.auth import delete_all_user_data
 
-    await save_user("42", "2024000000", b"encrypted", Language.EN)
     await klas_session.save_new_session("42", {"JSESSIONID": "old"})
     fake_api(cookies_after={"JSESSIONID": "rotated"})
 
@@ -336,3 +340,33 @@ async def test_a_dead_old_session_does_not_end_a_newer_login(fake_api, monkeypat
     assert row.two_factor_required is False
     assert await _stored_cookies("42") == {"JSESSIONID": "newer"}
     assert _logins() == [], "no silent login over a session replaced meanwhile"
+
+
+async def test_a_silent_login_does_not_store_a_session_for_a_user_who_left(
+    fake_api, monkeypatch
+):
+    """/unregister while the silent login ran: storing the new session after
+    it would leave live credentials with nothing to ever clear them."""
+    from app.handlers.auth import delete_all_user_data
+
+    async def unregister_then_log_in(self, login_id, password):
+        await delete_all_user_data("42")
+        self.restored = {"JSESSIONID": "silent"}
+        return LoginResult(LoginStatus.OK, {"JSESSIONID": "silent"})
+
+    monkeypatch.setattr(FakeApi, "attempt_login", unregister_then_log_in)
+    fake_api()
+
+    async with open_session(FakeUser()) as access:
+        assert access.status is SessionStatus.UNAVAILABLE
+
+    assert await get_klas_session("42") is None
+
+
+async def test_no_session_row_is_written_for_an_unregistered_user():
+    from app.handlers.auth import delete_all_user_data
+
+    await delete_all_user_data("42")
+
+    assert await update_klas_session("42", login_prompt_sent=True) is False
+    assert await get_klas_session("42") is None

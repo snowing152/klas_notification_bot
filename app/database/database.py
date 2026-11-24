@@ -354,10 +354,19 @@ async def get_klas_session(user_id: str):
 
 
 async def update_klas_session(user_id: str, **fields) -> bool:
-    """Set columns on the user's KLAS session row, creating it if needed."""
+    """Set columns on the user's KLAS session row, creating it if needed.
+
+    Only for a registered user, checked in the same transaction: a login or
+    an operation that was running when the user deleted their data would
+    otherwise create the row again - for a session, live credentials that
+    nothing would ever clear. Answers False when nothing was written.
+    """
     async with AsyncSessionLocal() as session:
         async with session.begin():
             try:
+                if await session.get(User, user_id) is None:
+                    logging.info(f"Not writing a KLAS session for unregistered {user_id}")
+                    return False
                 row = await session.get(KlasSession, user_id)
                 if row is None:
                     row = KlasSession(user_id=user_id)
