@@ -8,13 +8,13 @@ from aiogram import Dispatcher, F, types
 from app.strings import Strings
 from app.database.database import get_user
 from app.keyboards import (
+    create_klas_relogin_keyboard,
     create_login_klas_keyboard,
     create_show_filter_keyboard,
     quick_access_labels,
 )
 from app.utils import timezone
-from app.utils.encryption import decrypt_password
-from app.services.kw import KwangwoonUniversityApi
+from app.services.klas_session import SessionStatus, open_session
 from app.utils.language_utils import get_user_language_with_fallback
 
 # Assignment types the "Only assignments" filter covers - everything that
@@ -29,7 +29,7 @@ TYPE_EMOJIS = {
     "discussions": "💬",
 }
 
-# get_todo_list() logs in and makes five requests per subject, so a filter
+# get_todo_list() makes five requests per subject, so a filter
 # tap re-running it would feel like a hang. Cache the flattened,
 # already-sorted list per user for a few minutes instead.
 CACHE_TTL_SECONDS = 300
@@ -75,7 +75,10 @@ def _pending(items: list[dict], now) -> list[dict]:
 
 
 async def _load_items(user_id: str) -> tuple[str, list[dict] | None]:
-    """(status, items). status is "no_user", "login_failed" or "ok"."""
+    """(status, items).
+
+    status is "no_user", "needs_login", "password_rejected", "unavailable" or "ok".
+    """
     cached = _items_cache.get(user_id)
     if cached and time.monotonic() - cached[0] < CACHE_TTL_SECONDS:
         return "ok", cached[1]
@@ -84,13 +87,17 @@ async def _load_items(user_id: str) -> tuple[str, list[dict] | None]:
     if not user:
         return "no_user", None
 
-    async with KwangwoonUniversityApi() as kw:
-        if not await kw.login(user.username, decrypt_password(user.encrypted_password)):
-            return "login_failed", None
-        todo_list = await kw.get_todo_list()
+    async with open_session(user) as access:
+        if access.status is SessionStatus.NEEDS_LOGIN:
+            return "needs_login", None
+        if access.status is SessionStatus.PASSWORD_REJECTED:
+            return "password_rejected", None
+        if access.status is SessionStatus.UNAVAILABLE:
+            return "unavailable", None
+        todo_list = await access.api.get_todo_list()
 
     if todo_list is None:
-        return "login_failed", None
+        return "unavailable", None
 
     items = _flatten_and_sort(todo_list)
     # A list missing a category KLAS refused is shown, since it is all there
@@ -183,8 +190,17 @@ async def show_all_assignments(message: types.Message):
                 reply_markup=create_login_klas_keyboard(user_lang),
             )
             return
-        if status == "login_failed":
-            await message.answer(Strings.get("unexpected_error", user_lang))
+        if status == "needs_login":
+            await message.answer(
+                Strings.get("klas_login_required", user_lang),
+                reply_markup=create_klas_relogin_keyboard(user_lang),
+            )
+            return
+        if status == "password_rejected":
+            await message.answer(Strings.get("credentials_expired", user_lang))
+            return
+        if status == "unavailable":
+            await message.answer(Strings.get("klas_unavailable", user_lang))
             return
 
         now = timezone.now()
@@ -208,11 +224,27 @@ async def process_show_filter_callback(callback_query: types.CallbackQuery):
         category = callback_query.data.removeprefix("show_")
 
         status, items = await _load_items(user_id)
+        if status == "needs_login":
+            # The cache expired between opening /show and tapping a filter, and
+            # the KLAS session has ended since: a toast would vanish, so send
+            # the login button as a message.
+            await callback_query.message.answer(
+                Strings.get("klas_login_required", user_lang),
+                reply_markup=create_klas_relogin_keyboard(user_lang),
+            )
+            await callback_query.answer()
+            return
+        if status == "password_rejected":
+            await callback_query.message.answer(
+                Strings.get("credentials_expired", user_lang)
+            )
+            await callback_query.answer()
+            return
         if status != "ok":
-            # The cache expired between opening /show and tapping a filter,
-            # and the retry itself failed - ask the user to just run it again
-            # rather than block the tap on a second full KLAS login here.
-            await callback_query.answer(Strings.get("unexpected_error", user_lang))
+            # The cache expired and the retry itself failed - ask the user to
+            # just run /show again rather than block the tap on a retry here.
+            text_key = "klas_unavailable" if status == "unavailable" else "unexpected_error"
+            await callback_query.answer(Strings.get(text_key, user_lang))
             return
 
         now = timezone.now()

@@ -1,11 +1,10 @@
 import logging
 from aiogram.filters import Command
-from aiogram import Dispatcher, types
+from aiogram import Dispatcher, F, types
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 
-from app.utils.encryption import encrypt_password
-from app.services.kw import KwangwoonUniversityApi
+from app.utils.encryption import decrypt_password, encrypt_password
 from app.services.qr import (
     library_login,
     get_secret_key,
@@ -13,14 +12,20 @@ from app.services.qr import (
     LibraryLoginRejected,
 )
 from app.database.database import (
+    delete_klas_session,
     delete_library_user,
     delete_notification_data,
     delete_user,
     delete_user_settings,
+    get_klas_session,
+    get_user,
     save_user,
     save_library_user,
 )
-from app.strings import Strings
+from app.strings import Language, Strings
+from app.keyboards import KLAS_RELOGIN_CALLBACK, create_login_klas_keyboard
+from app.handlers.klas_login import LoginOutcome, run_push_login
+from app.services.klas_session import clear_password_rejected, mark_password_rejected
 from app.utils.language_utils import get_user_language_with_fallback
 from app.handlers.student_info import student_photo_path
 from app.handlers.todos import forget_cached_items
@@ -66,40 +71,111 @@ async def process_username(message: types.Message, state: FSMContext):
 
 
 async def process_password(message: types.Message, state: FSMContext):
+    """Check the credentials, save them, and log in with the push approval."""
+    user_lang = Language.EN
     try:
         user_lang = await get_user_language_with_fallback(message)
-
-        user_data = await state.get_data()
-        username = user_data["username"]
+        username = (await state.get_data())["username"]
         password = message.text
-
-        try:
-            # Test credentials
-            async with KwangwoonUniversityApi() as kw:
-                isLogin = await kw.login(username, password)
-                if not isLogin:
-                    await message.answer(Strings.get("invalid_credentials", user_lang))
-                    return
-
-            # Save user credentials to the database
-            user_id = str(message.from_user.id)
-            encrypted_password = encrypt_password(password)
-            if await save_user(user_id, username, encrypted_password, user_lang):
-                await message.answer(Strings.get("registration_successful", user_lang))
-                logging.info(f"User {user_id} registered successfully")
-            else:
-                await message.answer(
-                    Strings.get("failed_to_save_credentials", user_lang)
-                )
-
-        except Exception as e:
-            await message.answer(Strings.get("registration_failed", user_lang))
-        finally:
-            await message.delete()
-            await state.clear()
     except Exception as e:
-        logging.error(f"Error in process_password: {e}")
+        logging.error(f"Error in process_password: {type(e).__name__}: {e}")
         await message.answer(Strings.get("unexpected_error", user_lang))
+        return
+    finally:
+        # Before anything slow: the push approval can take two minutes, and
+        # the password must not sit in the chat or keep the FSM waiting. The
+        # state goes first: a user left in it would have their next message
+        # sent to KLAS as a password.
+        await state.clear()
+        try:
+            await message.delete()
+        except Exception as e:
+            logging.error(f"Could not delete a password message: {type(e).__name__}: {e}")
+
+    user_id = str(message.from_user.id)
+
+    async def save_credentials() -> bool:
+        existing = await get_user(user_id)
+        if existing is None or existing.username != username:
+            # A session kept for another student number must not outlive
+            # the switch, whatever happens to the login that follows.
+            await delete_klas_session(user_id)
+        else:
+            # Same student, new password: the kept session still works, and
+            # re-login is allowed again now that the password is fresh.
+            await clear_password_rejected(user_id)
+        saved = await save_user(user_id, username, encrypt_password(password), user_lang)
+        if not saved:
+            logging.error(f"Could not save the KLAS credentials of {user_id}")
+        return saved
+
+    try:
+        outcome = await run_push_login(
+            message.bot,
+            message.chat.id,
+            user_id,
+            username,
+            password,
+            user_lang,
+            on_password_accepted=save_credentials,
+        )
+        if outcome is LoginOutcome.LOGGED_IN:
+            await message.answer(Strings.get("registration_successful", user_lang))
+            logging.info(f"User {user_id} registered successfully")
+        elif outcome is LoginOutcome.WRONG_CREDENTIALS:
+            await message.answer(Strings.get("invalid_credentials", user_lang))
+    except Exception as e:
+        logging.error(
+            f"Error in process_password: {type(e).__name__}: {e}", exc_info=True
+        )
+        await message.answer(Strings.get("registration_failed", user_lang))
+
+
+async def process_klas_relogin(callback_query: types.CallbackQuery):
+    """The "Log in to KLAS" button: a new session from the saved password."""
+    user_lang = Language.EN
+    try:
+        user_lang = await get_user_language_with_fallback(callback_query)
+        await callback_query.answer()
+        user_id = str(callback_query.from_user.id)
+        chat_id = callback_query.message.chat.id
+        bot = callback_query.bot
+
+        user = await get_user(user_id)
+        if not user:
+            await bot.send_message(
+                chat_id,
+                Strings.get("need_to_register", user_lang),
+                reply_markup=create_login_klas_keyboard(user_lang),
+            )
+            return
+
+        session_row = await get_klas_session(user_id)
+        if session_row is not None and session_row.password_rejected:
+            # KLAS locks the account after five wrong passwords; every tap
+            # would resend the one it already rejected.
+            await bot.send_message(chat_id, Strings.get("credentials_expired", user_lang))
+            return
+
+        outcome = await run_push_login(
+            bot,
+            chat_id,
+            user_id,
+            user.username,
+            decrypt_password(user.encrypted_password),
+            user_lang,
+        )
+        if outcome is LoginOutcome.LOGGED_IN:
+            await bot.send_message(chat_id, Strings.get("klas_login_success", user_lang))
+        elif outcome is LoginOutcome.WRONG_CREDENTIALS:
+            # The saved password no longer works; only /register can fix that.
+            await mark_password_rejected(user_id)
+            await bot.send_message(chat_id, Strings.get("credentials_expired", user_lang))
+    except Exception as e:
+        logging.error(
+            f"Error in process_klas_relogin: {type(e).__name__}: {e}", exc_info=True
+        )
+        await callback_query.message.answer(Strings.get("unexpected_error", user_lang))
 
 
 async def delete_all_user_data(user_id: str) -> None:
@@ -108,6 +184,7 @@ async def delete_all_user_data(user_id: str) -> None:
     in-memory assignment cache is read before the database.
     Shared by /unregister and the /account screen's delete-confirm button."""
     await delete_user(user_id)
+    await delete_klas_session(user_id)
     await delete_library_user(user_id)
     await delete_notification_data(user_id)
     await delete_user_settings(user_id)
@@ -217,6 +294,9 @@ def register_handlers(dp: Dispatcher):
     dp.message.register(cmd_register, Command("register"))
     dp.message.register(cmd_unregister, Command("unregister"))
     dp.message.register(cmd_library_register, Command("lregister"))
+    # Before callbacks.register_handlers, whose unfiltered handler takes
+    # every callback it is offered.
+    dp.callback_query.register(process_klas_relogin, F.data == KLAS_RELOGIN_CALLBACK)
 
     # State handlers
     dp.message.register(process_username, RegistrationStates.waiting_for_username)

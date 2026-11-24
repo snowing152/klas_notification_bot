@@ -65,8 +65,8 @@ policy in `railway.json` and `Restart=on-failure` in `botdaemon.service` act on 
 because `common.other_message` is a catch-all `dp.message.register` with no filter — it
 swallows anything reaching it and routes free text to the LLM. Anything registered after
 it would never fire. `callbacks.process_callback_query` is likewise unfiltered for callback queries, so
-every module owning its own callbacks — `settings`, `account`, and `todos`' `show_*`
-filter buttons — is registered before it; anything registered after would never see a tap.
+every module owning its own callbacks — `auth`'s `klas_login` button, `settings`,
+`account`, and `todos`' `show_*` filter buttons — is registered before it; anything registered after would never see a tap.
 Registration and library-registration flows are aiogram FSM states
 (`app/handlers/auth.py`) with `MemoryStorage`, so an in-progress registration is lost on
 restart. `auth` is registered *first*, so its states swallow even commands: a user at the
@@ -109,14 +109,19 @@ matched to handlers is in [LOCALIZATION.md](LOCALIZATION.md#quick-access-buttons
 ## Sessions
 
 `app/services/kw.py` (`KwangwoonUniversityApi`) is an async context manager
-— always use `async with`, one instance per operation. `app/services/qr.py` instead keeps
+— always use `async with`, one instance per operation. What lasts between operations is
+the user's KLAS *login*: KLAS often asks for push approval in its app, so
+`app/services/klas_session.py` keeps one working session per user in SQLite and every
+operation continues it through `open_session()`, which logs in silently (never with a
+push) only when the kept session is gone
+([KLAS.md](KLAS.md#login-and-the-second-factor)). `app/services/qr.py` instead keeps
 a module-level shared `aiohttp` session that `main.py` closes in its `finally`.
 
 ## Caches
 
 `app/services/news.py` and `food.py` hold module-level caches (news TTL: 1 hour), as does
 `app/handlers/todos.py` (`_items_cache`, 5 min): `/show`'s filter buttons re-render from it
-rather than repeating `get_todo_list()`, which is a login plus five requests per subject.
+rather than repeating `get_todo_list()`, which is five requests per subject.
 It is read *before* the database, so `auth.delete_all_user_data` must drop the user's entry
 (`todos.forget_cached_items`) or a deleted account keeps being served from memory.
 

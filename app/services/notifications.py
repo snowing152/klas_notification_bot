@@ -4,9 +4,9 @@ import logging
 from app.bot import bot
 from app.config import settings
 
-from app.utils.encryption import decrypt_password
 from app.database.database import (
     get_all_users,
+    get_klas_session,
     get_notification_state,
     get_sent_notifications,
     get_user_language,
@@ -15,7 +15,8 @@ from app.database.database import (
     record_sent_notifications,
     update_notification_state,
 )
-from app.services.kw import KwangwoonUniversityApi
+from app.keyboards import create_klas_relogin_keyboard
+from app.services.klas_session import SessionStatus, open_session, set_login_prompt_sent
 from app.strings import Strings, Language
 from app.utils import timezone
 
@@ -46,11 +47,6 @@ TYPE_EMOJIS = {
 # however many users are being read, kw.MAX_CONCURRENT_REQUESTS bounds what
 # KLAS actually receives at one moment.
 MAX_CONCURRENT_USERS = 5
-
-# A single failed login is usually KLAS being KLAS. Three in a row (an hour and
-# a half apart) is the saved password no longer working - KW forces a change
-# every few months, and until now the bot just went quiet without saying why.
-LOGIN_FAILURES_BEFORE_WARNING = 3
 
 # Marks an assignment as already announced when it first appeared, as opposed
 # to the "t<hours>" kinds recorded for each deadline threshold.
@@ -151,7 +147,9 @@ async def send_new_assignments(
     )
 
 
-async def _send(text: str, user_id: str, detail: str = "") -> bool:
+async def _send(
+    text: str, user_id: str, detail: str = "", reply_markup=None
+) -> bool:
     """Deliver one message. `detail` names the kind for the log line only.
 
     A week of production logs had 332 cycles and not one line saying a
@@ -160,7 +158,7 @@ async def _send(text: str, user_id: str, detail: str = "") -> bool:
     assignment text the message carries.
     """
     try:
-        await bot.send_message(chat_id=user_id, text=text)
+        await bot.send_message(chat_id=user_id, text=text, reply_markup=reply_markup)
         logging.info(f"Notification sent to {user_id}{detail}")
         return True
     except Exception as e:
@@ -179,25 +177,41 @@ async def start_notification_service():
         logging.error(f"Notification task failed: {e}")
 
 
-async def _handle_login_failure(user_id: str, state, user_lang: Language) -> None:
-    """Count a failed KLAS login and, once it is clearly the password, say so."""
-    failures = (getattr(state, "login_failures", 0) or 0) + 1
-    already_warned = bool(getattr(state, "credentials_warned", False))
-    await update_notification_state(user_id, login_failures=failures)
+async def _ask_for_login(
+    user_id: str, user_lang: Language, user_settings, status: SessionStatus
+) -> None:
+    """Tell the user, once, what it takes to get KLAS read again.
 
-    if failures < LOGIN_FAILURES_BEFORE_WARNING or already_warned:
+    NEEDS_LOGIN: approve a login. The bot never sends the push itself - an
+    unprompted one would be a surprise approval request on the student's
+    phone - so the message carries the button that does. PASSWORD_REJECTED:
+    the saved password stopped working, and only /register fixes that.
+    """
+    row = await get_klas_session(user_id)
+    if row is not None and row.login_prompt_sent:
         return
 
-    if await _send(Strings.get("credentials_expired", user_lang), user_id):
-        await update_notification_state(user_id, credentials_warned=True)
-        logging.info(f"Warned user {user_id} that their KLAS password fails")
+    if in_quiet_hours(user_settings):
+        # Held for the first daytime cycle; nothing is recorded, so it comes
+        # up again until it has been sent.
+        logging.info(f"KLAS login prompt for {user_id} held (quiet hours)")
+        return
 
-
-async def _clear_login_failures(user_id: str, state) -> None:
-    if getattr(state, "login_failures", 0) or getattr(state, "credentials_warned", False):
-        await update_notification_state(
-            user_id, login_failures=0, credentials_warned=False
+    if status is SessionStatus.PASSWORD_REJECTED:
+        sent = await _send(
+            Strings.get("credentials_expired", user_lang),
+            user_id,
+            " (KLAS password rejected)",
         )
+    else:
+        sent = await _send(
+            Strings.get("klas_login_required", user_lang),
+            user_id,
+            " (KLAS login required)",
+            reply_markup=create_klas_relogin_keyboard(user_lang),
+        )
+    if sent:
+        await set_login_prompt_sent(user_id)
 
 
 def _collect_messages(
@@ -357,21 +371,25 @@ async def _process_user(user) -> tuple[bool, int]:
         for key, kind in _unrecorded.get(user_id, ()):
             sent.setdefault(key, set()).add(kind)
 
-        async with KwangwoonUniversityApi() as kw:
-            # An unchecked login was the most common way a cycle failed: the
-            # login died on the wire, cookies stayed empty, and get_todo_list
-            # reported "No cookies found" as if the credentials were the
-            # problem.
-            if not await kw.login(
-                user.username, decrypt_password(user.encrypted_password)
-            ):
-                logging.warning(f"Could not log in as user {user_id}")
-                await _handle_login_failure(user_id, state, user_lang)
+        async with open_session(user) as access:
+            if access.status is SessionStatus.UNAVAILABLE:
+                logging.warning(f"KLAS unavailable for user {user_id}")
                 return False, 0
 
-            await _clear_login_failures(user_id, state)
+            if access.status in (
+                SessionStatus.NEEDS_LOGIN,
+                SessionStatus.PASSWORD_REJECTED,
+            ):
+                # open_session already tried a silent login, so this user
+                # really has to act. Existing users have no session row after
+                # this shipped; where KLAS wants the push, each gets one prompt
+                # on the first daytime cycle. Not a failed check: counting
+                # everyone who has to act would make every summary a warning.
+                logging.info(f"User {user_id} has to act before KLAS can be read")
+                await _ask_for_login(user_id, user_lang, user_settings, access.status)
+                return True, 0
 
-            todo_list = await kw.get_todo_list()
+            todo_list = await access.api.get_todo_list()
 
             # None means KLAS could not be read; an empty list means the
             # student genuinely has no subjects this semester.

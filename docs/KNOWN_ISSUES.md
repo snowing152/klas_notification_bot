@@ -24,14 +24,55 @@ covered by [Voice and other media are refused](#voice-and-other-media-are-refuse
 - **Where:** `app/services/kw.py`, `qr.py`, `library.py`, `news.py`, `food.py`; the host
   table is in [ARCHITECTURE.md](ARCHITECTURE.md#what-it-talks-to).
 
+### A kept KLAS session dies, and the student has to approve again
+
+- **Symptom:** a user gets the "log in to KLAS again" message and their notifications
+  pause until they tap the button and approve the push. After a downtime of more than
+  two hours many users get it at once.
+- **Cause:** KLAS often asks for push approval when the bot logs in, so the bot keeps
+  one session per user alive and, when it dies, tries one silent login before asking
+  ([KLAS.md](KLAS.md#login-and-the-second-factor)).
+  KLAS ends a session after two idle hours; the 30-minute notification cycle keeps it
+  alive only while the bot runs. Whether KLAS also ends sessions after some fixed time,
+  or when the student logs in elsewhere, is not known yet.
+- **Workaround:** keep deploys short. The log line `KLAS session of <user> ended after
+  <n> hours` shows how long sessions really live.
+- **Where:** `app/services/klas_session.py`, `_ask_for_login` in
+  `app/services/notifications.py`.
+
+### Two operations on one session can lose a rotated cookie
+
+- **Symptom:** a user is asked to log in again soon after a successful login, without
+  a downtime.
+- **Cause:** `open_session` writes the cookies back when an operation ends. If `/show`
+  and the notification cycle run on the same login at once, the last write wins; if
+  KLAS rotated a cookie in only the other one, the stored session holds a stale value.
+  Not seen yet, and it may never happen if KLAS does not rotate cookies mid-session.
+- **Workaround:** none needed unless it shows up in the logs; a per-user lock around
+  `open_session` would fix it.
+- **Where:** `open_session` and `_store_cookies` in `app/services/klas_session.py`.
+
+### Only push approval is supported, not the email code
+
+- **Symptom:** a student without the KLAS app registered on a phone cannot log in
+  through the bot; they get the "no phone is registered" message.
+- **Cause:** KLAS also offers a code sent by email (`CertiEmailSendStd.do`,
+  `CertiKeyCheckStd.do`), but its responses have not been captured, so the bot does not
+  implement it ([KLAS.md](KLAS.md#when-klas-changes): endpoints are not guessed).
+- **Workaround:** install the KLAS app and log in there once.
+- **Where:** `app/handlers/klas_login.py`.
+
 ### KW forces a password change every few months
 
-- **Symptom:** a user's notifications stop; after three failed cycles they get the
-  "can't log into KLAS with your saved password" message.
-- **Cause:** the stored password is no longer valid. The bot cannot know the new one.
+- **Symptom:** the kept session keeps working, but the next time it dies and the user
+  taps "Log in to KLAS", they get the "can't log into KLAS with your saved password"
+  message instead of a push.
+- **Cause:** the stored password is no longer valid. The bot cannot know the new one,
+  and it only finds out when it logs in, which now happens only on the user's tap.
+  After one rejection the button refuses to resend it (`password_rejected`), because
+  KLAS locks the account after five wrong passwords.
 - **Workaround:** the user runs `/register` again.
-- **Where:** `_handle_login_failure` in `app/services/notifications.py`
-  ([NOTIFICATIONS.md](NOTIFICATIONS.md#the-password-warning)).
+- **Where:** `process_klas_relogin` in `app/handlers/auth.py`.
 
 ### The Gemini model name is hard-coded
 

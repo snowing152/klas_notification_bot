@@ -50,3 +50,16 @@ def encrypt_password(password):
 
 def decrypt_password(encrypted_password):
     return _cipher().decrypt(encrypted_password).decode()
+
+
+def encrypt_secret(plaintext: str) -> str:
+    """Encrypt any secret text with the same key as the passwords.
+
+    Returns the Fernet token as text; it is ASCII, so it fits a String column.
+    """
+    return _cipher().encrypt(plaintext.encode()).decode()
+
+
+def decrypt_secret(token: str) -> str:
+    """Reverse encrypt_secret(). Raises cryptography's InvalidToken on a bad token."""
+    return _cipher().decrypt(token).decode()

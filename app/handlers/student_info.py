@@ -7,9 +7,8 @@ from aiogram.types import FSInputFile
 
 from app.strings import Strings
 from app.database.database import get_user
-from app.keyboards import create_login_klas_keyboard
-from app.services.kw import KwangwoonUniversityApi
-from app.utils.encryption import decrypt_password
+from app.keyboards import create_klas_relogin_keyboard, create_login_klas_keyboard
+from app.services.klas_session import SessionStatus, open_session
 from app.utils.language_utils import get_user_language_with_fallback
 
 PHOTOS_DIR = Path("images/photos")
@@ -34,11 +33,22 @@ async def send_student_info(bot, chat_id: int, user_id: str, user_lang) -> None:
         )
         return
 
-    async with KwangwoonUniversityApi() as kw:
-        if not await kw.login(user.username, decrypt_password(user.encrypted_password)):
-            await bot.send_message(chat_id, Strings.get("unexpected_error", user_lang))
+    async with open_session(user) as access:
+        if access.status is SessionStatus.NEEDS_LOGIN:
+            await bot.send_message(
+                chat_id,
+                Strings.get("klas_login_required", user_lang),
+                reply_markup=create_klas_relogin_keyboard(user_lang),
+            )
+            return
+        if access.status is SessionStatus.PASSWORD_REJECTED:
+            await bot.send_message(chat_id, Strings.get("credentials_expired", user_lang))
+            return
+        if access.status is SessionStatus.UNAVAILABLE:
+            await bot.send_message(chat_id, Strings.get("klas_unavailable", user_lang))
             return
 
+        kw = access.api
         student_info = await kw.get_student_info()
 
         if not student_info:

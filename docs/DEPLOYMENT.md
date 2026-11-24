@@ -30,7 +30,7 @@ with `python-dotenv`; real environment variables win over it.
 | `DATA_DIR` | on Railway | working directory | where `bot_users.db` and `encryption_key.key` live; must exist and be writable ([DATABASE.md](DATABASE.md)) |
 | `ENCRYPTION_KEY` | on Railway | empty | Fernet key; when empty, `<DATA_DIR>/encryption_key.key` is used ([SECURITY.md](SECURITY.md)) |
 | `DATABASE_URL` | no | SQLite file in `DATA_DIR` | full SQLAlchemy URL; leave unset |
-| `NOTIFICATION_CHECK_INTERVAL` | no | `1800` | seconds between notification cycles; a `Settings` field, not an `os.getenv` call |
+| `NOTIFICATION_CHECK_INTERVAL` | no | `1800` | seconds between notification cycles; a `Settings` field, not an `os.getenv` call. Keep it well under 7200: the cycle is what keeps every user's KLAS session alive, and KLAS ends a session after two idle hours ([KLAS.md](KLAS.md#login-and-the-second-factor)) |
 | `KW_TZ` | no | `Asia/Seoul` | escape hatch, read in `app/config.py` and `app/utils/timezone.py`; leave unset ([TIMEZONE.md](TIMEZONE.md)) |
 | `RAILWAY_ENVIRONMENT` | — | — | set by Railway itself, read in `app/utils/log_format.py`; do not set it by hand |
 

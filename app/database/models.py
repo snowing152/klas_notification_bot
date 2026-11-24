@@ -64,9 +64,9 @@ class NotificationState(Base):
     # False until one cycle has recorded the assignments the student already
     # had, so switching the feature on does not announce all of them as new.
     seeded = Column(Boolean, nullable=False, default=False)
-    # Consecutive failed KLAS logins. KW forces a password change every few
-    # months; without this the bot just goes quiet and the student never learns
-    # why their notifications stopped.
+    # No longer written: the notification cycle does not log in any more (KLAS
+    # wants push approval each time), so there is nothing to count. Kept because
+    # dropping a column needs a migration this project does not have.
     login_failures = Column(Integer, nullable=False, default=0)
     credentials_warned = Column(Boolean, nullable=False, default=False)
 
@@ -89,6 +89,41 @@ class UserSettings(Base):
     quiet_hours = Column(Boolean, nullable=False, default=True)
     quiet_start = Column(Integer, nullable=False, default=1)
     quiet_end = Column(Integer, nullable=False, default=8)
+
+
+class KlasSession(Base):
+    """The KLAS session the bot keeps for a user between operations.
+
+    KLAS often asks for push approval in its phone app when the bot logs in,
+    so the bot cannot count on logging in on its own: it keeps one working
+    session alive and, once that has died, tries one silent login before it
+    asks the student to approve one. All
+    columns are here from the start because create_all cannot add a column to
+    a table that already exists.
+    """
+
+    __tablename__ = "klas_sessions"
+
+    user_id = Column(String, primary_key=True)
+    # Fernet token of the JSON cookie dict; None once the session is dead.
+    # A live session is as good as the password for as long as it lasts.
+    encrypted_cookies = Column(String, nullable=True)
+    needs_login = Column(Boolean, nullable=False, default=False)
+    # Whether the user was already told to approve a new login, so the
+    # notification loop says it once and not every cycle.
+    login_prompt_sent = Column(Boolean, nullable=False, default=False)
+    # KLAS rejected the saved password on a re-login. Further taps on the
+    # login button would resend it, and KLAS locks the account after five
+    # failures, so re-login stays refused until /register saves a new one.
+    password_rejected = Column(Boolean, nullable=False, default=False)
+    # A silent login (saved password, no push) got "push approval required".
+    # Stops further silent tries until the student logs in again, so KLAS is
+    # not sent the password every cycle for nothing.
+    two_factor_required = Column(Boolean, nullable=False, default=False)
+    # Seoul time (app.utils.timezone); logged_in_at shows how long KLAS lets a
+    # kept session live, which is not documented anywhere.
+    logged_in_at = Column(DateTime, nullable=True)
+    updated_at = Column(DateTime, nullable=True)
 
 
 class AnnouncementSeen(Base):

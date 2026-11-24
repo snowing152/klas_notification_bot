@@ -18,6 +18,7 @@ In `bot_users.db` ([DATABASE.md](DATABASE.md)), keyed by Telegram user id:
 |---|---|---|
 | KLAS login (the student number) | `users` | plain |
 | KLAS password | `users.encrypted_password` | Fernet |
+| KLAS session cookies — a logged-in session | `klas_sessions.encrypted_cookies` | Fernet |
 | Language | `users` | plain |
 | Library login | `library_users` | plain |
 | Library password | `library_users.encrypted_password` | Fernet |
@@ -57,8 +58,13 @@ stored password permanently undecryptable — never regenerate it on an existing
 Handlers `await message.delete()` after credential input so the password does not stay in
 the chat.
 
-Passwords have to be recoverable, not hashed: the bot logs into KLAS as the user every
-30 minutes. That makes the key the whole of the protection.
+Passwords have to be recoverable, not hashed: the second step of a KLAS login sends the
+password again after the student approved the push ([KLAS.md](KLAS.md#login-and-the-second-factor)).
+That makes the key the whole of the protection.
+
+The kept KLAS session (`klas_sessions`, `app/services/klas_session.py`) is encrypted with
+the same key. While it lives it is as good as the password, and it skips the second
+factor, so it is never logged either. Only cookies for `klas.kw.ac.kr` are stored.
 
 ## The key
 
@@ -79,7 +85,7 @@ Passwords have to be recoverable, not hashed: the bot logs into KLAS as the user
   `logs/`, `images/photos/` and `images/qr*.png`; check a new secret-bearing file with
   `git check-ignore -v <path>` before the first commit. `.env.example` holds names and
   comments only.
-- **Never log a decrypted password**, a phone number, or a response body from a KW
+- **Never log a decrypted password**, session cookies, a phone number, or a response body from a KW
   service. `app/services/qr.py` builds its exceptions so that only a result code reaches
   the log, because the service echoes the student id and phone number back;
   `notifications._send` logs the user and the kind of message, never its text.
@@ -100,7 +106,7 @@ Passwords have to be recoverable, not hashed: the bot logs into KLAS as the user
 |---|---|
 | `BOT_TOKEN` | revoke it in @BotFather (`/revoke`), set the new token, redeploy. Users and data are unaffected. |
 | `GEMINI_API_KEY` | delete the key in the Google console, create a new one, redeploy. |
-| The database without the key | passwords stay encrypted; logins, phone numbers and assignment titles are exposed. Tell the users. |
-| The key, or the database with the key | every stored password is exposed. Stop the bot, tell the users to change their KLAS and library passwords, and start over with a new key and an empty database. |
+| The database without the key | passwords and sessions stay encrypted; logins, phone numbers and assignment titles are exposed. Tell the users. |
+| The key, or the database with the key | every stored password and every live KLAS session is exposed. Stop the bot, tell the users to change their KLAS and library passwords, and start over with a new key and an empty database. |
 
 <!-- FILL IN: who decides on and sends a breach notice to users, and through which channel -->

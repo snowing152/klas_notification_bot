@@ -1,5 +1,5 @@
 import logging
-from sqlalchemy import delete, select
+from sqlalchemy import delete, select, update
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
@@ -7,6 +7,7 @@ from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
 from app.database.models import (
     AnnouncementSeen,
     Base,
+    KlasSession,
     LibraryUser,
     NotificationState,
     SentNotification,
@@ -334,6 +335,93 @@ async def delete_notification_data(user_id: str) -> bool:
             except SQLAlchemyError as e:
                 await session.rollback()
                 logging.error(f"Error deleting notification data: {e}")
+                return False
+
+
+async def get_klas_session(user_id: str):
+    """The user's kept KLAS session row, or None if there is none.
+
+    Also None when the database could not be read; the caller then treats the
+    user as having no session, which costs a login prompt and never a repeat
+    of something already sent.
+    """
+    async with AsyncSessionLocal() as session:
+        try:
+            return await session.get(KlasSession, user_id)
+        except SQLAlchemyError as e:
+            logging.error(f"Error getting KLAS session: {e}")
+            return None
+
+
+async def update_klas_session(user_id: str, **fields) -> bool:
+    """Set columns on the user's KLAS session row, creating it if needed.
+
+    Only for a registered user, checked in the same transaction: a login or
+    an operation that was running when the user deleted their data would
+    otherwise create the row again - for a session, live credentials that
+    nothing would ever clear. Answers False when nothing was written.
+    """
+    async with AsyncSessionLocal() as session:
+        async with session.begin():
+            try:
+                if await session.get(User, user_id) is None:
+                    logging.info(f"Not writing a KLAS session for unregistered {user_id}")
+                    return False
+                row = await session.get(KlasSession, user_id)
+                if row is None:
+                    row = KlasSession(user_id=user_id)
+                    session.add(row)
+                for name, value in fields.items():
+                    setattr(row, name, value)
+                await session.commit()
+                return True
+            except SQLAlchemyError as e:
+                await session.rollback()
+                logging.error(f"Error updating KLAS session: {e}")
+                return False
+
+
+async def update_current_klas_session(user_id: str, logged_in_at, **fields) -> bool:
+    """Set columns only if the row still holds the login `logged_in_at` names.
+
+    For writes made at the end of an operation that started earlier: in the
+    meantime the user may have deleted their data, or approved a new login,
+    and an unconditional write would bring back a deleted session or replace
+    the newer one. Never inserts. Answers whether a row was changed.
+    """
+    async with AsyncSessionLocal() as session:
+        async with session.begin():
+            try:
+                result = await session.execute(
+                    update(KlasSession)
+                    .where(
+                        KlasSession.user_id == user_id,
+                        KlasSession.logged_in_at == logged_in_at,
+                        KlasSession.needs_login.is_(False),
+                    )
+                    .values(**fields)
+                )
+                await session.commit()
+                return result.rowcount > 0
+            except SQLAlchemyError as e:
+                await session.rollback()
+                logging.error(f"Error updating KLAS session: {e}")
+                return False
+
+
+async def delete_klas_session(user_id: str) -> bool:
+    """Forget a user's kept KLAS session - part of /unregister."""
+    async with AsyncSessionLocal() as session:
+        async with session.begin():
+            try:
+                await session.execute(
+                    delete(KlasSession).where(KlasSession.user_id == user_id)
+                )
+                await session.commit()
+                return True
+            except SQLAlchemyError as e:
+                await session.rollback()
+                logging.error(f"Error deleting KLAS session: {e}")
                 return False
 
 
