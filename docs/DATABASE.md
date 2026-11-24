@@ -21,6 +21,7 @@ Every `user_id` is the Telegram user id, stored as a string.
 | Table | Model | Holds |
 |---|---|---|
 | `users` | `User` | KLAS login (the student number), Fernet-encrypted KLAS password, language (`EN`/`KO`/`RU`) |
+| `klas_sessions` | `KlasSession` | the kept KLAS session: encrypted cookies, `needs_login`, `login_prompt_sent`, when it was logged in and last used |
 | `library_users` | `LibraryUser` | library login, encrypted library password, phone number |
 | `sent_notifications` | `SentNotification` | one row per (user, assignment key, kind) already delivered |
 | `notification_state` | `NotificationState` | `seeded`, `login_failures`, `credentials_warned` |
@@ -74,7 +75,7 @@ is above the database's `user_version`, and bumps the version after each.
 ## Deleting a user
 
 `auth.delete_all_user_data(user_id)` is the single place that does it, shared by
-`/unregister` and the `/account` delete button: `users`, `library_users`,
+`/unregister` and the `/account` delete button: `users`, `klas_sessions`, `library_users`,
 `sent_notifications`, `notification_state`, `user_settings`, `announcements_seen`, the
 cached ID photo and the in-memory assignment cache. A new table or cache keyed by user
 has to be added there.

@@ -14,6 +14,7 @@ from Crypto.Cipher import PKCS1_v1_5
 from Crypto.PublicKey import RSA
 from fake_useragent import UserAgent
 from bs4 import BeautifulSoup
+from yarl import URL
 import base64
 
 from app.utils import timezone
@@ -465,13 +466,31 @@ class KwangwoonUniversityApi:
         logging.info("The KLAS push was not approved in time")
         return LoginResult(LoginStatus.TWO_FACTOR_REQUIRED)
 
-    async def keep_alive(self) -> bool:
+    def restore_cookies(self, cookies: Dict) -> None:
+        """Continue a stored KLAS session: put its cookies into the jar."""
+        self.session.cookie_jar.update_cookies(cookies, URL(KLAS_BASE_URL))
+        self.cookies = dict(cookies)
+
+    def klas_cookies(self) -> Dict:
+        """The cookies KLAS would receive, to be stored for the next operation.
+
+        Filtered by host because the jar also holds cookies of the other KW
+        hosts an operation visited, such as did-3 for the ID photo.
+        """
+        jar_cookies = self.session.cookie_jar.filter_cookies(URL(KLAS_BASE_URL))
+        return {name: morsel.value for name, morsel in jar_cookies.items()}
+
+    async def keep_alive(self) -> Optional[bool]:
         """Extend the KLAS session and report whether it is still logged in.
 
         KLAS ends a session after two idle hours; UpdateSession.do is what its
         own "extend" button calls to reset that timer. Liveness is then read
         the same way attempt_login() reads it: a valid session is redirected
-        away from the login form. Never raises.
+        away from the login form.
+
+        Answers None when KLAS could not be reached, which says nothing about
+        the session: treating it as dead would make the student approve a
+        push for a network fault. Never raises.
         """
         try:
             async with self.session.get(
@@ -492,7 +511,7 @@ class KwangwoonUniversityApi:
             )
         except Exception as e:
             logging.warning(f"Could not extend the KLAS session: {e!r}")
-            return False
+            return None
 
         if alive:
             self._cookies_from_jar()

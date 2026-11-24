@@ -497,6 +497,33 @@ async def test_keep_alive_reports_a_dead_session():
     assert await api.keep_alive() is False
 
 
+async def test_keep_alive_cannot_tell_when_klas_is_unreachable():
+    """None, not False: a network fault must not end a kept session."""
+    api = _login_api()
+    api.session.get = lambda *args, **kwargs: ConnectionFailure()
+
+    assert await api.keep_alive() is None
+
+
+async def test_stored_cookies_round_trip_through_the_jar():
+    """No request goes out: the jar works offline."""
+    async with KwangwoonUniversityApi() as api:
+        api.restore_cookies({"JSESSIONID": "abc", "SESSION": "def"})
+
+        assert api.klas_cookies() == {"JSESSIONID": "abc", "SESSION": "def"}
+        assert api.cookies == {"JSESSIONID": "abc", "SESSION": "def"}
+
+
+async def test_cookies_of_other_hosts_are_not_stored():
+    async with KwangwoonUniversityApi() as api:
+        api.restore_cookies({"JSESSIONID": "abc"})
+        api.session.cookie_jar.update_cookies(
+            {"PHPSESSID": "photo"}, URL("https://did-3.kw.ac.kr/")
+        )
+
+        assert api.klas_cookies() == {"JSESSIONID": "abc"}
+
+
 QR_PAGE = (
     '<main><iframe id="qrimg" src="https://did-3.kw.ac.kr/std/app/'
     'myidauth.php?token=abc" width="100%"></iframe></main>'

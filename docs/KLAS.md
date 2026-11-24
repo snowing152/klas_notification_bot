@@ -45,8 +45,18 @@ its own.
 A session ends after two idle hours (`/api/v1/session/info` reports `remainingTime`,
 7200 right after login). Polling `session/info` does not extend it; `GET
 UpdateSession.do` resets it, which is what KLAS's own "연장" button calls.
-`keep_alive()` calls it and then checks the session is still logged in. Whether KLAS
-also has a hard limit on how long a session may live is not known yet.
+`keep_alive()` calls it and then checks the session is still logged in; it answers
+`None`, not `False`, when KLAS could not be reached, so a network fault never ends a kept
+session. Whether KLAS also has a hard limit on how long a session may live is not known
+yet: `klas_session.mark_session_dead` logs `KLAS session of <user> ended after <n> hours`
+to find out.
+
+`app/services/klas_session.py` keeps one session per user between operations.
+`open_session(user)` restores the stored cookies, calls `keep_alive()`, and yields
+`ACTIVE` with a client, `NEEDS_LOGIN` (no session, or KLAS ended it) or `UNAVAILABLE`
+(KLAS unreachable). It never logs in. The cookies are written back on the way out, since
+KLAS may rotate them, and `save_new_session()` stores the session of a login the student
+just approved.
 
 KLAS regularly drops idle keep-alive connections, so requests go through
 `_request_with_retries`: `REQUEST_RETRIES = 2` replays one second apart, on connection

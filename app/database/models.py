@@ -91,6 +91,32 @@ class UserSettings(Base):
     quiet_end = Column(Integer, nullable=False, default=8)
 
 
+class KlasSession(Base):
+    """The KLAS session the bot keeps for a user between operations.
+
+    KLAS asks for push approval in its phone app on every login, so the bot
+    cannot log in again on its own: it keeps one approved session alive and
+    asks the student to approve again only once that session has died. All
+    columns are here from the start because create_all cannot add a column to
+    a table that already exists.
+    """
+
+    __tablename__ = "klas_sessions"
+
+    user_id = Column(String, primary_key=True)
+    # Fernet token of the JSON cookie dict; None once the session is dead.
+    # A live session is as good as the password for as long as it lasts.
+    encrypted_cookies = Column(String, nullable=True)
+    needs_login = Column(Boolean, nullable=False, default=False)
+    # Whether the user was already told to approve a new login, so the
+    # notification loop says it once and not every cycle.
+    login_prompt_sent = Column(Boolean, nullable=False, default=False)
+    # Seoul time (app.utils.timezone); logged_in_at shows how long KLAS lets a
+    # kept session live, which is not documented anywhere.
+    logged_in_at = Column(DateTime, nullable=True)
+    updated_at = Column(DateTime, nullable=True)
+
+
 class AnnouncementSeen(Base):
     """Which feature announcements a user has already been shown.
 

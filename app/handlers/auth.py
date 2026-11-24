@@ -13,6 +13,7 @@ from app.services.qr import (
     LibraryLoginRejected,
 )
 from app.database.database import (
+    delete_klas_session,
     delete_library_user,
     delete_notification_data,
     delete_user,
@@ -108,6 +109,7 @@ async def delete_all_user_data(user_id: str) -> None:
     in-memory assignment cache is read before the database.
     Shared by /unregister and the /account screen's delete-confirm button."""
     await delete_user(user_id)
+    await delete_klas_session(user_id)
     await delete_library_user(user_id)
     await delete_notification_data(user_id)
     await delete_user_settings(user_id)
