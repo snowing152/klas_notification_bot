@@ -349,6 +349,33 @@ async def test_login_sends_the_captcha_check_like_the_browser():
     assert confirm_call["json"]["captcha"] == ""
 
 
+async def test_a_long_captcha_answer_is_logged_capped(caplog):
+    """Regression: an HTML page from LoginCaptcha.do went into the log whole."""
+    page = "<html>" + "x" * 5000
+    routes = _credential_routes(LOGGED_IN)
+    routes[kw_service.LOGIN_CAPTCHA_URL] = [FakeResponse(text=page)]
+    api = _login_api(routes)
+
+    with caplog.at_level(logging.WARNING):
+        assert await api.login("student", "pw") == {"JSESSIONID": "fresh"}
+
+    assert repr(page[:200]) in caplog.text
+    assert page[:201] not in caplog.text
+    assert api.session.posts_to(kw_service.LOGIN_CONFIRM_URL)
+
+
+async def test_an_error_status_from_login_captcha_logs_no_answer(caplog):
+    routes = _credential_routes(LOGGED_IN)
+    routes[kw_service.LOGIN_CAPTCHA_URL] = [FakeResponse(status=502)]
+    api = _login_api(routes)
+
+    with caplog.at_level(logging.WARNING):
+        assert await api.login("student", "pw") == {"JSESSIONID": "fresh"}
+
+    assert "LoginCaptcha.do answered with status 502" in caplog.text
+    assert "Unexpected LoginCaptcha.do answer" not in caplog.text
+
+
 async def test_two_factor_answer_is_not_a_finished_login():
     """Regression: LoginConfirm.do answers errorCount 0 when it wants the push,
     and login() used to hand back the cookies of that half-open session."""
