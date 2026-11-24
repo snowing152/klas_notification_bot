@@ -321,8 +321,13 @@ class KwangwoonUniversityApi:
             # "0" is the only answer seen so far, on logins that needed no
             # captcha. Anything else is logged and left to LoginConfirm.do to
             # judge, which reports a missing captcha as an error of its own.
-            if captcha_answer != "0":
-                logging.warning(f"Unexpected LoginCaptcha.do answer: {captcha_answer!r}")
+            # None means an error status, which read_captcha_answer already
+            # logged. The answer is capped because KLAS can send a whole HTML
+            # page here, which would flood the log.
+            if captcha_answer is not None and captcha_answer != "0":
+                logging.warning(
+                    f"Unexpected LoginCaptcha.do answer: {captcha_answer[:200]!r}"
+                )
 
             login_body = {
                 "loginToken": encrypted_login,
