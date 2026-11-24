@@ -279,6 +279,35 @@ async def test_login_returns_none_when_the_connection_never_recovers():
     assert api.cookies == {}
 
 
+async def test_unreachable_klas_is_not_a_wrong_password():
+    """A student must not be told their password is wrong during an outage."""
+    api = _login_api({kw_service.LOGIN_SECURITY_URL: [ConnectionFailure()]})
+
+    result = await api.attempt_login("student", "pw")
+
+    assert result.status is kw_service.LoginStatus.UNAVAILABLE
+
+
+async def test_an_error_status_from_login_confirm_is_unavailable():
+    api = _login_api(_credential_routes(FakeResponse(status=502)))
+
+    result = await api.attempt_login("student", "pw")
+
+    assert result.status is kw_service.LoginStatus.UNAVAILABLE
+
+
+async def test_wrong_password_is_failed():
+    api = _login_api(
+        _credential_routes(
+            FakeResponse(payload={"errorCount": 1, "fieldErrors": [{"message": "nope"}]})
+        )
+    )
+
+    result = await api.attempt_login("student", "wrong")
+
+    assert result.status is kw_service.LoginStatus.FAILED
+
+
 async def test_login_returns_none_on_wrong_password():
     api = _login_api(
         _credential_routes(
@@ -503,6 +532,85 @@ async def test_keep_alive_cannot_tell_when_klas_is_unreachable():
     api.session.get = lambda *args, **kwargs: ConnectionFailure()
 
     assert await api.keep_alive() is None
+
+
+class LeakyError(Exception):
+    """Like an aiohttp response error: its repr carries the request headers."""
+
+    def __repr__(self):
+        return "LeakyError(headers={'Cookie': 'JSESSIONID=LIVE-SECRET'})"
+
+    def __str__(self):
+        return "400, message='Bad Request'"
+
+
+async def test_a_failed_keep_alive_does_not_log_the_session_cookie(caplog):
+    """Regression: keep_alive logged {e!r}, which for aiohttp's response
+    errors prints the Cookie header - a live, password-equivalent session."""
+    api = _login_api()
+    api.session.get = lambda *args, **kwargs: ConnectionFailure(LeakyError())
+
+    with caplog.at_level("INFO"):
+        assert await api.keep_alive() is None
+
+    assert "LIVE-SECRET" not in caplog.text
+    assert "LeakyError: 400" in caplog.text
+
+
+@pytest.fixture
+async def rotating_klas(monkeypatch):
+    """A local stand-in for KLAS that rotates JSESSIONID on UpdateSession.do
+    and treats only the rotated value as logged in. Loopback only."""
+    from aiohttp import web
+
+    async def update_session(request):
+        response = web.Response(text="{}")
+        response.set_cookie("JSESSIONID", "NEW")
+        return response
+
+    async def login_form(request):
+        if request.cookies.get("JSESSIONID") == "NEW":
+            raise web.HTTPFound("/frame")
+        return web.Response(text="login form")
+
+    async def frame(request):
+        return web.Response(text="frame")
+
+    app = web.Application()
+    app.router.add_get("/usr/cmn/login/UpdateSession.do", update_session)
+    app.router.add_get("/usr/cmn/login/LoginForm.do", login_form)
+    app.router.add_get("/frame", frame)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, "127.0.0.1", 0)
+    await site.start()
+    port = site._server.sockets[0].getsockname()[1]
+    base = f"http://127.0.0.1:{port}"
+
+    monkeypatch.setattr(kw_service, "KLAS_BASE_URL", base)
+    monkeypatch.setattr(
+        kw_service, "UPDATE_SESSION_URL", f"{base}/usr/cmn/login/UpdateSession.do"
+    )
+    monkeypatch.setattr(
+        kw_service, "LOGIN_FORM_URL", f"{base}/usr/cmn/login/LoginForm.do"
+    )
+    yield base
+    await runner.cleanup()
+
+
+async def test_a_cookie_klas_rotates_is_sent_from_then_on(rotating_klas):
+    """Regression: every request also passed cookies=self.cookies, and aiohttp
+    lets those win over the jar, so the old JSESSIONID kept going out after
+    KLAS replaced it and a healthy session read as dead."""
+    async with KwangwoonUniversityApi() as api:
+        # The default jar refuses cookies for an IP address; this test server
+        # has one, KLAS does not.
+        await api.session.close()
+        api.session = aiohttp.ClientSession(cookie_jar=aiohttp.CookieJar(unsafe=True))
+        api.restore_cookies({"JSESSIONID": "OLD"})
+
+        assert await api.keep_alive() is True
+        assert api.klas_cookies() == {"JSESSIONID": "NEW"}
 
 
 async def test_stored_cookies_round_trip_through_the_jar():

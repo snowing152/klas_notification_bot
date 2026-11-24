@@ -35,7 +35,9 @@ a browser login on 2026-11-24:
    session, and this time `LoginConfirm.do` answers `redirect: true`.
 
 In code: `attempt_login()` runs the login form check and steps 1-3 and answers a
-`LoginResult` (`OK`, `TWO_FACTOR_REQUIRED` or `FAILED`). `request_push()` runs steps 4-5
+`LoginResult`: `OK`, `TWO_FACTOR_REQUIRED`, `FAILED` (KLAS rejected the credentials) or
+`UNAVAILABLE` (KLAS unreachable or answering with an error, which says nothing about the
+password and must never be reported as a wrong one). `request_push()` runs steps 4-5
 and `wait_for_push_approval()` steps 6-7 on the same instance. The bot treats only the
 second `LoginConfirm.do` as proof: a `0000` from `UserCertPushChk.do` that is not
 followed by a login is retried at most `MAX_CREDENTIAL_RESUBMITS` times. `login()` is the
@@ -57,6 +59,26 @@ to find out.
 (KLAS unreachable). It never logs in. The cookies are written back on the way out, since
 KLAS may rotate them, and `save_new_session()` stores the session of a login the student
 just approved.
+
+`app/handlers/klas_login.py` (`run_push_login`) runs a whole login from a chat: it sends
+the push, tells the student to approve it, waits, stores the session, and explains a
+timeout, a missing phone or a failure, with the "Log in to KLAS" button where trying
+again helps. Only a user action starts it — `/register` (`auth.process_password`) or
+that button (`auth.process_klas_relogin`, callback `klas_login`) — never the notification
+loop: a push nobody asked for every half hour would be spam, and would teach students to
+approve pushes they did not start. `/register` saves the credentials as soon as KLAS has
+accepted the password and before the push goes out, so a push that times out is retried
+with the button rather than by typing the password again. One login per user at a time:
+a second tap answers "already waiting" instead of sending a second push.
+
+When KLAS rejects the saved password on a re-login, `klas_sessions.password_rejected` is
+set and the button refuses to try again until `/register` saves a password KLAS accepts:
+KLAS locks the account after five wrong passwords, and every tap would resend the same
+one. Writes made at the end of an operation (`_store_cookies`, `mark_session_dead`) are
+conditional on the login the operation started with (`logged_in_at`) and never insert,
+so they cannot bring back a session deleted by `/unregister` or replace a newer login.
+Requests take cookies from the client's jar only: passing them per request as well
+would override any cookie KLAS rotates, since aiohttp lets request cookies win.
 
 KLAS regularly drops idle keep-alive connections, so requests go through
 `_request_with_retries`: `REQUEST_RETRIES = 2` replays one second apart, on connection

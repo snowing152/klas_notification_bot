@@ -1,5 +1,5 @@
 import logging
-from sqlalchemy import delete, select
+from sqlalchemy import delete, select, update
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
@@ -366,6 +366,34 @@ async def update_klas_session(user_id: str, **fields) -> bool:
                     setattr(row, name, value)
                 await session.commit()
                 return True
+            except SQLAlchemyError as e:
+                await session.rollback()
+                logging.error(f"Error updating KLAS session: {e}")
+                return False
+
+
+async def update_current_klas_session(user_id: str, logged_in_at, **fields) -> bool:
+    """Set columns only if the row still holds the login `logged_in_at` names.
+
+    For writes made at the end of an operation that started earlier: in the
+    meantime the user may have deleted their data, or approved a new login,
+    and an unconditional write would bring back a deleted session or replace
+    the newer one. Never inserts. Answers whether a row was changed.
+    """
+    async with AsyncSessionLocal() as session:
+        async with session.begin():
+            try:
+                result = await session.execute(
+                    update(KlasSession)
+                    .where(
+                        KlasSession.user_id == user_id,
+                        KlasSession.logged_in_at == logged_in_at,
+                        KlasSession.needs_login.is_(False),
+                    )
+                    .values(**fields)
+                )
+                await session.commit()
+                return result.rowcount > 0
             except SQLAlchemyError as e:
                 await session.rollback()
                 logging.error(f"Error updating KLAS session: {e}")

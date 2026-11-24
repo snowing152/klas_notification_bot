@@ -8,8 +8,8 @@ Everything the bot sends without being asked: the deadline loop
 
 `main()` starts `start_notification_service` next to polling
 ([ARCHITECTURE.md](ARCHITECTURE.md#two-concurrent-tasks)). The notification loop (`check_todos`) sleeps
-`NOTIFICATION_CHECK_INTERVAL` (30 min), then, for every registered user, logs into KLAS
-with their decrypted password and emits at most one message per assignment per hour
+`NOTIFICATION_CHECK_INTERVAL` (30 min), then, for every registered user, opens their kept KLAS
+session ([KLAS.md](KLAS.md)) and emits at most one message per assignment per hour
 threshold (24/12/6/3/2/1), plus one when an assignment first appears. What has already
 been sent lives in SQLite - see below.
 
@@ -22,8 +22,13 @@ One cycle, per user (`_process_user`):
 1. Read the user's language, `notification_state`, `user_settings` and everything
    already sent. If the history cannot be read the user is skipped — sending blind would
    repeat what they already have.
-2. Log into KLAS. A failure counts towards the password warning below and ends the
-   user's cycle.
+2. `open_session(user)` (`app/services/klas_session.py`). KLAS wants push approval on
+   every login, so the cycle never logs in; it extends the session the user approved
+   earlier. `UNAVAILABLE` (KLAS unreachable) is a failed user. `NEEDS_LOGIN` ends the
+   user's cycle as a success: once, outside quiet hours, they get `klas_login_required`
+   with a "Log in to KLAS" button and `klas_sessions.login_prompt_sent` is set (only after
+   Telegram accepted it; a successful login resets it). Existing users have no session row
+   after this shipped, so each got one prompt on the first daytime cycle.
 3. `get_todo_list()`. `None` means KLAS could not be read (a failed user); `[]` means no
    subjects, which is a success with nothing to do. A subject marked `incomplete` had a
    category KLAS refused ([KLAS.md](KLAS.md#the-client)): the cycle goes on with what was
@@ -62,7 +67,6 @@ ends without a message.
 | `TIME_THRESHOLDS` | 24, 12, 6, 3, 2, 1 hours | the full set, each with its emoji |
 | `URGENT_THRESHOLDS` | 6, 3, 1 | what "urgent only" keeps |
 | `QUIET_HOURS_EXEMPT` | 2, 1 | still sent during quiet hours |
-| `LOGIN_FAILURES_BEFORE_WARNING` | 3 | consecutive failed logins before the user is told |
 | `NEW_ASSIGNMENT_KIND` | `"new"` | the kind recorded for the first-appearance message |
 
 A threshold fires when the remaining time is *at or under* it, on the next cycle — so
@@ -76,9 +80,8 @@ per (user, assignment, kind) already delivered - `new` for the announcement when
 assignment appeared, `t<hours>` for each deadline threshold - so a restart cannot repeat
 a message, and a send Telegram refused is left unrecorded and retried next cycle.
 `notification_state` carries the per-user `seeded` flag (the first cycle records existing
-work silently, so switching a user on never dumps a semester into the chat) and the
-consecutive-login-failure counter behind the "your KLAS password stopped working"
-warning. `user_settings` holds the `/settings` switches, defaulting to the old behaviour;
+work silently, so switching a user on never dumps a semester into the chat).
+(`login_failures` and `credentials_warned` are no longer written.) `user_settings` holds the `/settings` switches, defaulting to the old behaviour;
 quiet hours are read through `timezone.now()`, so they are Korean local hours.
 
 Two things the loop does keep in memory, neither of
@@ -107,13 +110,11 @@ Rules that follow from this, and that a change here has to keep:
   `quiet_end` picks it up — if it is still the tightest threshold by then
   ([KNOWN_ISSUES.md](KNOWN_ISSUES.md)).
 
-## The password warning
+## The login prompt
 
-KW forces a password change every few months, and the stored one then stops working.
-Each failed login increments `notification_state.login_failures`; at three in a row (an
-hour and a half apart) the user gets the `credentials_expired` string once
-(`credentials_warned`), telling them to run `/register` again. A successful login resets
-both. A single failure is usually just KLAS.
+A wrong or expired saved password is no longer found by the cycle; it shows when the user
+taps the login button. The prompt is one message per lost session, not per cycle. Quiet
+hours hold it (it is not recorded, so it goes out on the first daytime cycle).
 
 ## Settings
 

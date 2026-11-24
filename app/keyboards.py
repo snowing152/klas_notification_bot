@@ -222,6 +222,25 @@ def create_login_klas_keyboard(user_lang: Language):
     return builder.as_markup()
 
 
+KLAS_RELOGIN_CALLBACK = "klas_login"
+
+
+def create_klas_relogin_keyboard(user_lang: Language):
+    """One button that starts a KLAS login with the saved password.
+
+    For users who are registered but whose kept KLAS session is gone: they
+    only have to approve the push, not type their credentials again.
+    """
+    builder = InlineKeyboardBuilder()
+    builder.button(
+        text=Strings.get("button_klas_relogin", user_lang),
+        callback_data=KLAS_RELOGIN_CALLBACK,
+    )
+    builder.adjust(1)
+
+    return builder.as_markup()
+
+
 def create_login_library_keyboard(user_lang: Language):
     builder = InlineKeyboardBuilder()
     builder.button(

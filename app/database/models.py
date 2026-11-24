@@ -64,9 +64,9 @@ class NotificationState(Base):
     # False until one cycle has recorded the assignments the student already
     # had, so switching the feature on does not announce all of them as new.
     seeded = Column(Boolean, nullable=False, default=False)
-    # Consecutive failed KLAS logins. KW forces a password change every few
-    # months; without this the bot just goes quiet and the student never learns
-    # why their notifications stopped.
+    # No longer written: the notification cycle does not log in any more (KLAS
+    # wants push approval each time), so there is nothing to count. Kept because
+    # dropping a column needs a migration this project does not have.
     login_failures = Column(Integer, nullable=False, default=0)
     credentials_warned = Column(Boolean, nullable=False, default=False)
 
@@ -111,6 +111,10 @@ class KlasSession(Base):
     # Whether the user was already told to approve a new login, so the
     # notification loop says it once and not every cycle.
     login_prompt_sent = Column(Boolean, nullable=False, default=False)
+    # KLAS rejected the saved password on a re-login. Further taps on the
+    # login button would resend it, and KLAS locks the account after five
+    # failures, so re-login stays refused until /register saves a new one.
+    password_rejected = Column(Boolean, nullable=False, default=False)
     # Seoul time (app.utils.timezone); logged_in_at shows how long KLAS lets a
     # kept session live, which is not documented anywhere.
     logged_in_at = Column(DateTime, nullable=True)

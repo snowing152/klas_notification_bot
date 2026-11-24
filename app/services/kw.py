@@ -72,8 +72,11 @@ class LoginStatus(Enum):
     OK = "ok"
     # Password accepted; KLAS now wants the push approved in the KLAS app.
     TWO_FACTOR_REQUIRED = "two_factor_required"
-    # Wrong credentials, a locked account, or KLAS could not be reached.
+    # KLAS rejected the login: wrong credentials or a locked account.
     FAILED = "failed"
+    # KLAS could not be reached or answered with an error; this says nothing
+    # about the credentials, so it must not be reported as a wrong password.
+    UNAVAILABLE = "unavailable"
 
 
 @dataclass(frozen=True)
@@ -108,6 +111,15 @@ def _leaf_errors(error: BaseException) -> List[BaseException]:
     if isinstance(error, BaseExceptionGroup):
         return [leaf for inner in error.exceptions for leaf in _leaf_errors(inner)]
     return [error]
+
+
+def _describe(error: BaseException) -> str:
+    """An exception for the log, by type and str(), never repr().
+
+    The repr of an aiohttp response error prints the request headers, and the
+    Cookie among them is the student's live KLAS session.
+    """
+    return f"{type(error).__name__}: {error}"
 
 
 def _parse_push_page(html: str) -> Optional[tuple[str, str]]:
@@ -150,7 +162,8 @@ class KwangwoonUniversityApi:
         return True
 
     def set_cookies(self, cookies: dict):
-        self.cookies = cookies
+        """Continue a session from its cookies; same as restore_cookies()."""
+        self.restore_cookies(cookies)
 
     def _cookies_from_jar(self) -> dict:
         self.cookies = {cookie.key: cookie.value for cookie in self.session.cookie_jar}
@@ -176,7 +189,7 @@ class KwangwoonUniversityApi:
                 if attempt == REQUEST_RETRIES:
                     logging.error(
                         f"Request to {url} failed after {REQUEST_RETRIES + 1} "
-                        f"attempts: {e!r}"
+                        f"attempts: {_describe(e)}"
                     )
                     raise
                 # KLAS drops idle keep-alives constantly and every one of
@@ -185,7 +198,7 @@ class KwangwoonUniversityApi:
                 # rare case that actually matters: the "failed after N
                 # attempts" error a few lines up.
                 logging.info(
-                    f"Connection error on {url} ({e!r}), "
+                    f"Connection error on {url} ({_describe(e)}), "
                     f"retrying in {RETRY_DELAY_SECONDS}s"
                 )
                 await asyncio.sleep(RETRY_DELAY_SECONDS)
@@ -194,7 +207,7 @@ class KwangwoonUniversityApi:
         self.set_cookies(cookies)
         login_form_url = "https://klas.kw.ac.kr/usr/cmn/login/LoginForm.do"
 
-        async with self.session.get(login_form_url, cookies=self.cookies) as response:
+        async with self.session.get(login_form_url) as response:
             if str(response.url) != login_form_url:
                 logging.info(f"Log in with cookies. Status code: {response.status}")
                 return True
@@ -249,14 +262,14 @@ class KwangwoonUniversityApi:
         try:
             if await self._request_with_retries(
                 LOGIN_FORM_URL,
-                lambda: self.session.get(LOGIN_FORM_URL, cookies=self.cookies),
+                lambda: self.session.get(LOGIN_FORM_URL),
                 redirected_away_from_login_form,
             ):
                 logging.info("Logged in with existing cookies.")
                 return LoginResult(LoginStatus.OK, self._cookies_from_jar())
         except Exception as e:
-            logging.error(f"Could not open the KLAS login form: {e!r}")
-            return LoginResult(LoginStatus.FAILED)
+            logging.error(f"Could not open the KLAS login form: {_describe(e)}")
+            return LoginResult(LoginStatus.UNAVAILABLE)
 
         return await self._submit_credentials(login_id, login_pwd)
 
@@ -302,7 +315,6 @@ class KwangwoonUniversityApi:
                     LOGIN_CAPTCHA_URL,
                     json={"loginToken": encrypted_login, "captcha": ""},
                     headers=self.headers,
-                    cookies=self.cookies,
                 ),
                 read_captcha_answer,
             )
@@ -324,13 +336,12 @@ class KwangwoonUniversityApi:
                     LOGIN_CONFIRM_URL,
                     json=login_body,
                     headers=self.headers,
-                    cookies=self.cookies,
                 ),
                 read_login_result,
             )
         except Exception as e:
-            logging.error(f"An error occurred during KLAS login: {e!r}")
-            return LoginResult(LoginStatus.FAILED)
+            logging.error(f"An error occurred during KLAS login: {_describe(e)}")
+            return LoginResult(LoginStatus.UNAVAILABLE)
 
         return self._read_login_confirm(response_data)
 
@@ -342,7 +353,7 @@ class KwangwoonUniversityApi:
         finished login, so every later request ran on a half-open session.
         """
         if not isinstance(response_data, dict):
-            return LoginResult(LoginStatus.FAILED)
+            return LoginResult(LoginStatus.UNAVAILABLE)
 
         if response_data.get("errorCount", 0) == 0:
             details = response_data.get("response") or {}
@@ -409,12 +420,11 @@ class KwangwoonUniversityApi:
                     CERT_PUSH_PAGE_URL,
                     params={"loginId": self.login_id},
                     data={"modalId": "ax5-modal-1"},
-                    cookies=self.cookies,
                 ),
                 read_push_page,
             )
         except Exception as e:
-            logging.error(f"Could not send the KLAS push: {e!r}")
+            logging.error(f"Could not send the KLAS push: {_describe(e)}")
             return PushRequest(PushStatus.FAILED)
 
         parsed = _parse_push_page(html) if html else None
@@ -430,7 +440,7 @@ class KwangwoonUniversityApi:
         try:
             answer = await self._post_json(CERT_PUSH_CHECK_URL, body, self.headers)
         except Exception as e:
-            logging.warning(f"Could not check the KLAS push: {e!r}")
+            logging.warning(f"Could not check the KLAS push: {_describe(e)}")
             return False
         return isinstance(answer, dict) and answer.get("returnCode") == CERT_OK
 
@@ -467,7 +477,13 @@ class KwangwoonUniversityApi:
         return LoginResult(LoginStatus.TWO_FACTOR_REQUIRED)
 
     def restore_cookies(self, cookies: Dict) -> None:
-        """Continue a stored KLAS session: put its cookies into the jar."""
+        """Continue a stored KLAS session: put its cookies into the jar.
+
+        The jar is the only place requests take cookies from. Passing them per
+        request as well would override what KLAS rotates via Set-Cookie: aiohttp
+        lets request cookies win over the jar, so a refreshed session cookie
+        would keep being sent with its old value.
+        """
         self.session.cookie_jar.update_cookies(cookies, URL(KLAS_BASE_URL))
         self.cookies = dict(cookies)
 
@@ -492,25 +508,30 @@ class KwangwoonUniversityApi:
         the session: treating it as dead would make the student approve a
         push for a network fault. Never raises.
         """
+        async def check_extension(response) -> None:
+            if response.status not in (200, 304):
+                logging.warning(
+                    f"UpdateSession.do answered with status {response.status}"
+                )
+
+        async def still_logged_in(response) -> bool:
+            return str(response.url) != LOGIN_FORM_URL
+
         try:
-            async with self.session.get(
-                UPDATE_SESSION_URL, headers=self.headers, cookies=self.cookies
-            ) as response:
-                if response.status not in (200, 304):
-                    logging.warning(
-                        f"UpdateSession.do answered with status {response.status}"
-                    )
-
-            async def still_logged_in(response) -> bool:
-                return str(response.url) != LOGIN_FORM_URL
-
+            # Retried like every other read: KLAS drops idle keep-alive
+            # connections, and one dropped socket must not cost the extension.
+            await self._request_with_retries(
+                UPDATE_SESSION_URL,
+                lambda: self.session.get(UPDATE_SESSION_URL, headers=self.headers),
+                check_extension,
+            )
             alive = await self._request_with_retries(
                 LOGIN_FORM_URL,
-                lambda: self.session.get(LOGIN_FORM_URL, cookies=self.cookies),
+                lambda: self.session.get(LOGIN_FORM_URL),
                 still_logged_in,
             )
         except Exception as e:
-            logging.warning(f"Could not extend the KLAS session: {e!r}")
+            logging.warning(f"Could not extend the KLAS session: {_describe(e)}")
             return None
 
         if alive:
@@ -553,7 +574,6 @@ class KwangwoonUniversityApi:
                     url=url,
                     json=body,
                     headers=headers or self.headers,
-                    cookies=self.cookies,
                 ),
                 read_body,
             )
@@ -1154,7 +1174,6 @@ class KwangwoonUniversityApi:
                 qr_page_url,
                 lambda: self.session.post(
                     qr_page_url,
-                    cookies=self.cookies,
                     headers=self.headers,
                     json=body,
                 ),
@@ -1192,13 +1211,25 @@ class KwangwoonUniversityApi:
 
 
 if __name__ == "__main__":
+    import getpass
+
     logging.basicConfig(level=logging.INFO)
 
     async def main():
         async with KwangwoonUniversityApi() as student:
             username = input("Enter your ID: ")
-            password = input("Enter your password: ")
-            await student.login(username, password)
+            # getpass: the password must not be echoed into a terminal that
+            # gets copied or logged.
+            password = getpass.getpass("Enter your password: ")
+            result = await student.attempt_login(username, password)
+            if result.status is LoginStatus.TWO_FACTOR_REQUIRED:
+                push = await student.request_push()
+                print(f"push: {push.status.value} - approve it in the KLAS app")
+                if push.status is PushStatus.SENT:
+                    result = await student.wait_for_push_approval(password, push)
+            print(f"login: {result.status.value}")
+            if result.status is not LoginStatus.OK:
+                return
             todo_list = await student.get_todo_list()
             student_info = await student.get_student_info()
             student_photo = await student.get_student_photo()

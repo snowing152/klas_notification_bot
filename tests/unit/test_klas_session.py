@@ -157,8 +157,7 @@ async def test_an_unreadable_session_asks_for_a_new_login(fake_api):
 
 
 async def test_a_new_login_clears_the_prompt_flag(fake_api, fixed_now):
-    await klas_session.mark_session_dead("42")
-    await klas_session.set_login_prompt_sent("42")
+    await update_klas_session("42", needs_login=True, login_prompt_sent=True)
 
     await klas_session.save_new_session("42", {"JSESSIONID": "new"})
 
@@ -177,3 +176,60 @@ async def test_deleting_a_users_data_drops_their_klas_session():
     await delete_all_user_data("42")
 
     assert await get_klas_session("42") is None
+
+
+async def test_an_operation_does_not_bring_back_a_deleted_session(fake_api):
+    """/unregister during an operation: the write-back used to re-insert the
+    row, leaving a live session nothing would ever clear."""
+    from app.handlers.auth import delete_all_user_data
+
+    await save_user("42", "2024000000", b"encrypted", Language.EN)
+    await klas_session.save_new_session("42", {"JSESSIONID": "old"})
+    fake_api(cookies_after={"JSESSIONID": "rotated"})
+
+    async with open_session(FakeUser()) as access:
+        assert access.status is SessionStatus.ACTIVE
+        await delete_all_user_data("42")
+
+    assert await get_klas_session("42") is None
+
+
+async def test_an_operation_does_not_overwrite_a_newer_login(fake_api, monkeypatch):
+    start = datetime.datetime(2026, 11, 24, 8, 0)
+    monkeypatch.setattr(klas_session.timezone, "now", lambda: start)
+    await klas_session.save_new_session("42", {"JSESSIONID": "old"})
+    fake_api(cookies_after={"JSESSIONID": "old-rotated"})
+
+    async with open_session(FakeUser()):
+        monkeypatch.setattr(
+            klas_session.timezone, "now", lambda: start + datetime.timedelta(minutes=5)
+        )
+        await klas_session.save_new_session("42", {"JSESSIONID": "newer"})
+
+    assert await _stored_cookies("42") == {"JSESSIONID": "newer"}
+
+
+async def test_a_dead_old_session_does_not_end_a_newer_login(fake_api, monkeypatch):
+    """The old session dies while the student approves a new one."""
+    start = datetime.datetime(2026, 11, 24, 8, 0)
+    monkeypatch.setattr(klas_session.timezone, "now", lambda: start)
+    await klas_session.save_new_session("42", {"JSESSIONID": "old"})
+
+    async def newer_login_then_dead():
+        monkeypatch.setattr(
+            klas_session.timezone, "now", lambda: start + datetime.timedelta(minutes=5)
+        )
+        await klas_session.save_new_session("42", {"JSESSIONID": "newer"})
+        return False
+
+    fake_api()
+    FakeApi.keep_alive = lambda self: newer_login_then_dead()
+    try:
+        async with open_session(FakeUser()) as access:
+            assert access.status is SessionStatus.NEEDS_LOGIN
+    finally:
+        del FakeApi.keep_alive
+
+    row = await get_klas_session("42")
+    assert row.needs_login is False
+    assert await _stored_cookies("42") == {"JSESSIONID": "newer"}

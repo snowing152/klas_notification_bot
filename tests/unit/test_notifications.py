@@ -1,16 +1,21 @@
 import asyncio
 import datetime
 import logging
+from contextlib import asynccontextmanager
 
 import pytest
 
 from app.database.database import (
+    get_klas_session,
     get_notification_state,
     get_sent_notifications,
+    update_klas_session,
     update_notification_state,
     update_user_settings,
 )
+from app.keyboards import create_klas_relogin_keyboard
 from app.services import notifications
+from app.services.klas_session import KlasAccess, SessionStatus
 from app.strings import Language, Strings
 
 
@@ -22,20 +27,10 @@ class FakeUser:
 
 
 class FakeApi:
-    """Stands in for KwangwoonUniversityApi's async context manager."""
+    """Stands in for the KwangwoonUniversityApi that open_session yields."""
 
-    def __init__(self, login_result=None, todo_list=None):
-        self._login_result = login_result
+    def __init__(self, todo_list=None):
         self._todo_list = todo_list
-
-    async def __aenter__(self):
-        return self
-
-    async def __aexit__(self, exc_type, exc_val, exc_tb):
-        return False
-
-    async def login(self, username, password):
-        return self._login_result
 
     async def get_todo_list(self):
         return self._todo_list
@@ -46,12 +41,14 @@ class FakeBot:
 
     def __init__(self, fail=False):
         self.sent = []
+        self.markups = []
         self.fail = fail
 
-    async def send_message(self, chat_id, text):
+    async def send_message(self, chat_id, text, reply_markup=None):
         if self.fail:
             raise RuntimeError("Telegram said no")
         self.sent.append((chat_id, text))
+        self.markups.append(reply_markup)
 
 
 @pytest.fixture(autouse=True)
@@ -96,11 +93,18 @@ class FakeClock:
         return at_hour(self.hour)
 
 
-def _patch_user_deps(monkeypatch, api, bot=None, hour=12):
+def _patch_user_deps(
+    monkeypatch, api, bot=None, hour=12, status=SessionStatus.ACTIVE
+):
+    """`api` is what an ACTIVE session yields; other statuses yield none."""
     bot = bot or FakeBot()
     monkeypatch.setattr(notifications, "timezone", FakeClock(hour))
-    monkeypatch.setattr(notifications, "KwangwoonUniversityApi", lambda: api)
-    monkeypatch.setattr(notifications, "decrypt_password", lambda p: "password")
+
+    @asynccontextmanager
+    async def fake_open_session(user):
+        yield KlasAccess(status, api if status is SessionStatus.ACTIVE else None)
+
+    monkeypatch.setattr(notifications, "open_session", fake_open_session)
     monkeypatch.setattr(notifications, "bot", bot)
     monkeypatch.setattr(notifications, "SEND_DELAY_SECONDS", 0)
 
@@ -183,7 +187,7 @@ async def test_a_hold_is_logged_once_however_long_the_night_is(monkeypatch, capl
     one reminder read as fourteen, and no line named the user or the reminder."""
     caplog.set_level(logging.INFO)
     await _threshold_only_user()
-    api = FakeApi(login_result={"JSESSIONID": "x"}, todo_list=make_todo(hours=20, hour=3))
+    api = FakeApi(todo_list=make_todo(hours=20, hour=3))
 
     for hour in (3, 4, 5):
         _patch_user_deps(monkeypatch, api, hour=hour)
@@ -207,7 +211,7 @@ async def test_a_held_reminder_that_is_never_sent_says_so(monkeypatch, caplog):
     used to call both "held", as if they were waiting for the morning."""
     caplog.set_level(logging.INFO)
     await _threshold_only_user()
-    api = FakeApi(login_result={"JSESSIONID": "x"}, todo_list=make_todo(hours=6, hour=1))
+    api = FakeApi(todo_list=make_todo(hours=6, hour=1))
 
     for hour in (1, 4, 5):
         bot = _patch_user_deps(monkeypatch, api, hour=hour)
@@ -228,7 +232,7 @@ async def test_a_reminder_telegram_refused_is_not_reported_dropped(monkeypatch, 
     own line and a retry next cycle, not a reminder that stopped being due."""
     caplog.set_level(logging.INFO)
     await _threshold_only_user()
-    api = FakeApi(login_result={"JSESSIONID": "x"}, todo_list=make_todo(hours=20, hour=3))
+    api = FakeApi(todo_list=make_todo(hours=20, hour=3))
     _patch_user_deps(monkeypatch, api, hour=3)
     await notifications._process_user(FakeUser("1"))
 
@@ -244,7 +248,7 @@ async def test_a_sent_reminder_the_database_refused_is_not_sent_again(monkeypatc
     failed nothing remembered the send, and the same reminder went out again
     every 30 minutes for as long as the database stayed locked."""
     await _threshold_only_user()
-    api = FakeApi(login_result={"JSESSIONID": "x"}, todo_list=make_todo(hours=20))
+    api = FakeApi(todo_list=make_todo(hours=20))
     bot = _patch_user_deps(monkeypatch, api)
     real_record = notifications.record_sent_notifications
 
@@ -270,7 +274,7 @@ async def test_what_was_sent_is_counted_even_when_the_check_then_breaks(monkeypa
     await _threshold_only_user()
     bot = _patch_user_deps(
         monkeypatch,
-        FakeApi(login_result={"JSESSIONID": "x"}, todo_list=make_todo(hours=20)),
+        FakeApi(todo_list=make_todo(hours=20)),
     )
 
     async def broken_prune(user_id, current_keys):
@@ -302,16 +306,17 @@ async def test_cycle_with_no_users_reports_no_failures(monkeypatch):
     assert await notifications.run_notification_cycle([]) == (0, 0)
 
 
-async def test_process_user_reports_failure_when_login_fails(monkeypatch):
-    """A failed login is the user's cycle failing, not 'no assignments'."""
-    _patch_user_deps(monkeypatch, FakeApi(login_result=None))
+async def test_process_user_reports_failure_when_klas_is_unavailable(monkeypatch):
+    """KLAS being unreachable is a failed check, and nobody is messaged."""
+    bot = _patch_user_deps(monkeypatch, None, status=SessionStatus.UNAVAILABLE)
 
     assert await notifications._process_user(FakeUser("1")) == (False, 0)
+    assert bot.sent == []
 
 
 async def test_process_user_reports_failure_when_klas_cannot_be_read(monkeypatch):
     _patch_user_deps(
-        monkeypatch, FakeApi(login_result={"JSESSIONID": "x"}, todo_list=None)
+        monkeypatch, FakeApi(todo_list=None)
     )
 
     assert await notifications._process_user(FakeUser("1")) == (False, 0)
@@ -320,7 +325,7 @@ async def test_process_user_reports_failure_when_klas_cannot_be_read(monkeypatch
 async def test_process_user_succeeds_with_no_subjects(monkeypatch):
     """An empty list is a real answer: the student has no subjects this term."""
     _patch_user_deps(
-        monkeypatch, FakeApi(login_result={"JSESSIONID": "x"}, todo_list=[])
+        monkeypatch, FakeApi(todo_list=[])
     )
 
     assert await notifications._process_user(FakeUser("1")) == (True, 0)
@@ -330,7 +335,7 @@ async def test_first_cycle_records_existing_work_without_announcing_it(monkeypat
     """Switching the feature on must not announce a whole semester as new."""
     bot = _patch_user_deps(
         monkeypatch,
-        FakeApi(login_result={"JSESSIONID": "x"}, todo_list=make_todo(hours=100)),
+        FakeApi(todo_list=make_todo(hours=100)),
     )
 
     assert await notifications._process_user(FakeUser("1")) == (True, 0)
@@ -344,7 +349,7 @@ async def test_first_cycle_records_existing_work_without_announcing_it(monkeypat
 
 
 async def test_new_assignment_is_announced_once(monkeypatch):
-    api = FakeApi(login_result={"JSESSIONID": "x"}, todo_list=make_todo(hours=100))
+    api = FakeApi(todo_list=make_todo(hours=100))
     bot = _patch_user_deps(monkeypatch, api)
     await notifications._process_user(FakeUser("1"))  # seeding cycle
 
@@ -363,7 +368,7 @@ async def test_deadline_threshold_is_sent_once(monkeypatch):
     await update_notification_state("1", seeded=True)
     bot = _patch_user_deps(
         monkeypatch,
-        FakeApi(login_result={"JSESSIONID": "x"}, todo_list=make_todo(hours=2.5)),
+        FakeApi(todo_list=make_todo(hours=2.5)),
     )
 
     await notifications._process_user(FakeUser("1"))
@@ -384,7 +389,7 @@ async def test_the_last_hour_is_not_skipped(monkeypatch):
     await update_notification_state("1", seeded=True)
     bot = _patch_user_deps(
         monkeypatch,
-        FakeApi(login_result={"JSESSIONID": "x"}, todo_list=make_todo(hours=0.5)),
+        FakeApi(todo_list=make_todo(hours=0.5)),
     )
 
     await notifications._process_user(FakeUser("1"))
@@ -397,7 +402,7 @@ async def test_a_notification_telegram_refused_is_retried(monkeypatch):
     """Recording a send that never happened would lose the notification."""
     await update_notification_state("1", seeded=True)
     failing = FakeBot(fail=True)
-    api = FakeApi(login_result={"JSESSIONID": "x"}, todo_list=make_todo(hours=2.5))
+    api = FakeApi(todo_list=make_todo(hours=2.5))
     _patch_user_deps(monkeypatch, api, bot=failing)
 
     await notifications._process_user(FakeUser("1"))
@@ -412,7 +417,7 @@ async def test_expired_assignment_is_left_alone(monkeypatch):
     await update_notification_state("1", seeded=True)
     bot = _patch_user_deps(
         monkeypatch,
-        FakeApi(login_result={"JSESSIONID": "x"}, todo_list=make_todo(hours=-3)),
+        FakeApi(todo_list=make_todo(hours=-3)),
     )
 
     await notifications._process_user(FakeUser("1"))
@@ -421,7 +426,7 @@ async def test_expired_assignment_is_left_alone(monkeypatch):
 
 
 async def test_finished_assignments_are_forgotten(monkeypatch):
-    api = FakeApi(login_result={"JSESSIONID": "x"}, todo_list=make_todo(hours=100))
+    api = FakeApi(todo_list=make_todo(hours=100))
     _patch_user_deps(monkeypatch, api)
     await notifications._process_user(FakeUser("1"))
     assert await get_sent_notifications("1") != {}
@@ -442,7 +447,7 @@ async def test_a_partial_read_does_not_forget_what_was_sent(monkeypatch):
     """KLAS refusing one request used to look like the work being handed in:
     its rows were pruned, and the next full read announced it as new and sent
     its reminders again."""
-    api = FakeApi(login_result={"JSESSIONID": "x"}, todo_list=make_todo(hours=100))
+    api = FakeApi(todo_list=make_todo(hours=100))
     bot = _patch_user_deps(monkeypatch, api)
     await notifications._process_user(FakeUser("1"))  # seeding cycle
     history = await get_sent_notifications("1")
@@ -461,7 +466,6 @@ async def test_a_partial_read_still_sends_what_it_did_read(monkeypatch):
     bot = _patch_user_deps(
         monkeypatch,
         FakeApi(
-            login_result={"JSESSIONID": "x"},
             todo_list=_refused(make_todo(hours=2.5)),
         ),
     )
@@ -475,7 +479,7 @@ async def test_the_first_cycle_does_not_seed_from_a_partial_read(monkeypatch):
     a read with a category missing, that category arrives as new one cycle
     later - the dump of a semester seeding exists to prevent."""
     api = FakeApi(
-        login_result={"JSESSIONID": "x"}, todo_list=_refused(make_todo(hours=100))
+        todo_list=_refused(make_todo(hours=100))
     )
     bot = _patch_user_deps(monkeypatch, api)
 
@@ -488,44 +492,67 @@ async def test_the_first_cycle_does_not_seed_from_a_partial_read(monkeypatch):
     assert (await get_notification_state("1")).seeded is True
 
 
-async def test_repeated_login_failures_warn_the_user_once(monkeypatch):
-    """KW forces a password change every few months; the bot used to just go
-    quiet and the student never learned why."""
-    bot = _patch_user_deps(monkeypatch, FakeApi(login_result=None))
-
-    for _ in range(notifications.LOGIN_FAILURES_BEFORE_WARNING + 2):
-        await notifications._process_user(FakeUser("1"))
-
-    warnings = [text for _, text in bot.sent]
-    assert len(warnings) == 1, "the warning repeats every cycle"
-    assert "/register" in warnings[0]
-    state = await get_notification_state("1")
-    assert state.credentials_warned is True
-
-
-async def test_a_single_login_failure_says_nothing(monkeypatch):
-    """One failed login is usually KLAS dropping the connection."""
-    bot = _patch_user_deps(monkeypatch, FakeApi(login_result=None))
-
-    await notifications._process_user(FakeUser("1"))
-
-    assert bot.sent == []
-    state = await get_notification_state("1")
-    assert state.login_failures == 1
-
-
-async def test_a_working_login_clears_the_failure_count(monkeypatch):
-    _patch_user_deps(monkeypatch, FakeApi(login_result=None))
-    await notifications._process_user(FakeUser("1"))
-
-    _patch_user_deps(
-        monkeypatch, FakeApi(login_result={"JSESSIONID": "x"}, todo_list=[])
+def _needs_login(monkeypatch, hour=12, bot=None):
+    return _patch_user_deps(
+        monkeypatch, None, bot=bot, hour=hour, status=SessionStatus.NEEDS_LOGIN
     )
+
+
+async def _prompt_sent(user_id="1") -> bool:
+    row = await get_klas_session(user_id)
+    return bool(row and row.login_prompt_sent)
+
+
+async def test_a_user_who_must_log_in_is_asked_once_with_the_button(monkeypatch):
+    bot = _needs_login(monkeypatch)
+
+    assert await notifications._process_user(FakeUser("1")) == (True, 0)
+
+    assert [text for _, text in bot.sent] == [
+        Strings.get("klas_login_required", Language.EN)
+    ]
+    assert bot.markups == [create_klas_relogin_keyboard(Language.EN)]
+    assert await _prompt_sent()
+
+
+async def test_the_login_prompt_is_not_repeated_every_cycle(monkeypatch):
+    bot = _needs_login(monkeypatch)
+    await notifications._process_user(FakeUser("1"))
     await notifications._process_user(FakeUser("1"))
 
-    state = await get_notification_state("1")
-    assert state.login_failures == 0
-    assert state.credentials_warned is False
+    assert len(bot.sent) == 1
+
+
+async def test_no_prompt_when_one_was_already_sent(monkeypatch):
+    await update_klas_session("1", needs_login=True, login_prompt_sent=True)
+    bot = _needs_login(monkeypatch)
+
+    assert await notifications._process_user(FakeUser("1")) == (True, 0)
+    assert bot.sent == []
+
+
+async def test_the_login_prompt_is_held_during_quiet_hours(monkeypatch):
+    bot = _needs_login(monkeypatch, hour=3)
+
+    assert await notifications._process_user(FakeUser("1")) == (True, 0)
+    assert bot.sent == []
+    assert not await _prompt_sent(), "held prompt was recorded as sent"
+
+    daytime = _needs_login(monkeypatch, hour=9)
+    await notifications._process_user(FakeUser("1"))
+    assert len(daytime.sent) == 1, "the held prompt never went out in the morning"
+    assert await _prompt_sent()
+
+
+async def test_the_login_prompt_is_not_recorded_when_telegram_refused(monkeypatch):
+    _needs_login(monkeypatch, bot=FakeBot(fail=True))
+
+    assert await notifications._process_user(FakeUser("1")) == (True, 0)
+    assert not await _prompt_sent()
+
+    working = _needs_login(monkeypatch)
+    await notifications._process_user(FakeUser("1"))
+    assert len(working.sent) == 1, "the refused prompt was not retried"
 
 
 async def test_send_notification_returns_false_and_logs_on_failure(monkeypatch, caplog):
@@ -571,7 +598,7 @@ async def test_quiet_hours_start_after_the_midnight_reminder(monkeypatch):
     await _threshold_only_user()
     bot = _patch_user_deps(
         monkeypatch,
-        FakeApi(login_result={"JSESSIONID": "x"}, todo_list=make_todo(hours=23.9, hour=0)),
+        FakeApi(todo_list=make_todo(hours=23.9, hour=0)),
         hour=0,
     )
 
@@ -599,7 +626,7 @@ def test_quiet_hours_cover_the_night_and_nothing_else():
 async def test_quiet_hours_hold_the_day_ahead_reminder(monkeypatch):
     """A reminder that falls due in the small hours waits for the morning."""
     await _threshold_only_user()
-    api = FakeApi(login_result={"JSESSIONID": "x"}, todo_list=make_todo(hours=20, hour=2))
+    api = FakeApi(todo_list=make_todo(hours=20, hour=2))
     bot = _patch_user_deps(monkeypatch, api, hour=2)
 
     await notifications._process_user(FakeUser("1"))
@@ -619,7 +646,7 @@ async def test_quiet_hours_let_the_last_hours_through(monkeypatch):
     await _threshold_only_user()
     bot = _patch_user_deps(
         monkeypatch,
-        FakeApi(login_result={"JSESSIONID": "x"}, todo_list=make_todo(hours=1.5, hour=2)),
+        FakeApi(todo_list=make_todo(hours=1.5, hour=2)),
         hour=2,
     )
 
@@ -633,7 +660,7 @@ async def test_quiet_hours_can_be_switched_off(monkeypatch):
     await update_user_settings("1", quiet_hours=False)
     bot = _patch_user_deps(
         monkeypatch,
-        FakeApi(login_result={"JSESSIONID": "x"}, todo_list=make_todo(hours=20, hour=2)),
+        FakeApi(todo_list=make_todo(hours=20, hour=2)),
         hour=2,
     )
 
@@ -645,7 +672,7 @@ async def test_quiet_hours_can_be_switched_off(monkeypatch):
 async def test_urgent_only_drops_the_wider_thresholds(monkeypatch):
     await _threshold_only_user()
     await update_user_settings("1", urgent_thresholds_only=True)
-    api = FakeApi(login_result={"JSESSIONID": "x"}, todo_list=make_todo(hours=20))
+    api = FakeApi(todo_list=make_todo(hours=20))
     bot = _patch_user_deps(monkeypatch, api)
 
     await notifications._process_user(FakeUser("1"))
@@ -661,7 +688,7 @@ async def test_deadline_alerts_can_be_switched_off(monkeypatch):
     await update_user_settings("1", deadline_alerts=False)
     bot = _patch_user_deps(
         monkeypatch,
-        FakeApi(login_result={"JSESSIONID": "x"}, todo_list=make_todo(hours=0.5)),
+        FakeApi(todo_list=make_todo(hours=0.5)),
     )
 
     await notifications._process_user(FakeUser("1"))
@@ -673,7 +700,7 @@ async def test_new_assignment_alerts_off_still_records_the_assignment(monkeypatc
     """Otherwise switching the setting back on announces the whole backlog."""
     await update_notification_state("1", seeded=True)
     await update_user_settings("1", new_assignment_alerts=False)
-    api = FakeApi(login_result={"JSESSIONID": "x"}, todo_list=make_todo(hours=100))
+    api = FakeApi(todo_list=make_todo(hours=100))
     bot = _patch_user_deps(monkeypatch, api)
 
     await notifications._process_user(FakeUser("1"))
@@ -690,7 +717,7 @@ async def test_new_assignment_alerts_off_still_records_the_assignment(monkeypatc
 async def test_a_discussion_is_announced_like_any_other_assignment(monkeypatch):
     """TYPE_EMOJIS is what decides which categories get notified at all, so a
     type missing from it would be collected by /show and never reminded about."""
-    api = FakeApi(login_result={"JSESSIONID": "x"}, todo_list=make_todo(hours=100))
+    api = FakeApi(todo_list=make_todo(hours=100))
     bot = _patch_user_deps(monkeypatch, api)
     await notifications._process_user(FakeUser("1"))  # seeding cycle
 
