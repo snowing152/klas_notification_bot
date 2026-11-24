@@ -406,7 +406,18 @@ class KwangwoonUniversityApi:
         try:
             cert_info = await self._post_json(CERT_INFO_URL, cert_body, self.headers)
             if not isinstance(cert_info, dict) or cert_info.get("returnCode") != CERT_OK:
-                logging.error("UserCertInfoOne.do did not accept the request")
+                # Only the code and KLAS's own message: the rest of the answer
+                # can describe the student's registered phone.
+                code, message = (
+                    (cert_info.get("returnCode"), cert_info.get("returnMsg"))
+                    if isinstance(cert_info, dict)
+                    else (None, None)
+                )
+                logging.error(
+                    "UserCertInfoOne.do did not accept the request: "
+                    f"returnCode={code!r} returnMsg={str(message)[:200]!r} "
+                    f"answer={type(cert_info).__name__}"
+                )
                 return PushRequest(PushStatus.FAILED)
             # The KLAS page itself only offers the push when status is "1",
             # and otherwise sends the student off to register the app.

@@ -1,6 +1,7 @@
 import asyncio
 import base64
 import datetime
+import logging
 
 import aiohttp
 import pytest
@@ -447,6 +448,32 @@ async def test_request_push_without_a_registered_phone():
 
     assert push.status is kw_service.PushStatus.NO_DEVICE
     assert api.session.posts_to(kw_service.CERT_PUSH_PAGE_URL) == []
+
+
+async def test_refused_cert_info_logs_why(caplog):
+    """Regression: a student's push login failed with only "did not accept
+    the request" in the log, so the KLAS answer could not be diagnosed."""
+    api = _push_api(
+        {
+            kw_service.CERT_INFO_URL: [
+                FakeResponse(
+                    payload={
+                        "returnCode": "9999",
+                        "returnMsg": "등록된 기기가 없습니다",
+                        "hpNo": "010-1234-5678",
+                    }
+                )
+            ],
+        }
+    )
+
+    with caplog.at_level(logging.ERROR):
+        push = await api.request_push()
+
+    assert push.status is kw_service.PushStatus.FAILED
+    assert "returnCode='9999'" in caplog.text
+    assert "등록된 기기가 없습니다" in caplog.text
+    assert "010-1234-5678" not in caplog.text
 
 
 async def test_request_push_fails_when_the_page_has_no_push_id():
