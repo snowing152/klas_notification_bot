@@ -73,8 +73,8 @@ says so. That is intended.
    python -c "from app.utils.encryption import generate_key; generate_key()"
    ```
 
-   This **overwrites** `<DATA_DIR>/encryption_key.key` without asking. Run it on a new
-   installation only.
+   It refuses to overwrite an existing `<DATA_DIR>/encryption_key.key`, but run it on a new
+   installation only: it cannot know about a key held in `ENCRYPTION_KEY`.
 4. Edit `botdaemon.service` — `User`, `Group`, `WorkingDirectory`, `ExecStart` — then:
 
    ```bash

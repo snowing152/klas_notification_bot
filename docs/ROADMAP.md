@@ -114,9 +114,6 @@ change second; every item here needs a before and after number.
       subject every 30 minutes. Candidates: a longer interval inside quiet hours, and
       skipping the per-subject reads that cannot produce a message. Do not trade
       correctness for requests: the 1h and 2h reminders must still be on time.
-- [ ] **Drop `bs4==0.0.2`** from `requirements.txt`: it is a stub that only pulls in
-      `beautifulsoup4`, which is already pinned. (`pycryptodome` is used by `kw.py` and
-      `qr.py`; keep it.)
 - [ ] **Keep image files off the hot path.** The ID photo is cached under the working
       directory, not `DATA_DIR`, so Railway fetches it again after every deploy
       ([entry](KNOWN_ISSUES.md#a-cached-id-photo-is-never-refreshed)).

@@ -56,7 +56,7 @@ registers handlers, `announce_pending()` is started as a task so polling does no
 on it, and then the two tasks above. All of it sits inside one `try`, and a failure is
 re-raised so the process exits non-zero — which is what lets the `ON_FAILURE` restart
 policy in `railway.json` and `Restart=on-failure` in `botdaemon.service` act on it. The
-`finally` closes the shared QR session and the bot session.
+`finally` closes the bot session.
 
 ## Handler registration order matters
 
@@ -92,10 +92,14 @@ The order in `app/bot.py` today:
 A new module with message handlers goes before `common`; one with callback handlers goes
 before `callbacks`.
 
-`AntiSpamMiddleware(limit=2)` sits on `dp.message`: a second message from the same user
-within two seconds gets the `too_many_messages` reply and reaches no handler. It lets
-aiogram's `SkipHandler`/`CancelHandler` through untouched, which the search escape above
-depends on.
+`setup_guards()` in `app/bot.py` puts two things on the dispatcher. Filters: only
+`chat.type == "private"` messages and callback queries are handled at all. Middleware:
+`AntiSpamMiddleware` on `dp.message` (limit 2 seconds) and on `dp.callback_query` (0.5
+seconds). A second event inside the limit gets the `too_many_messages` reply and reaches no
+handler. Messages from a user who has an FSM state are exempt, because a throttled
+credential message would be neither handled nor deleted. A handler that raises runs once;
+the middleware's own failures let the event through. `SkipHandler`/`CancelHandler` pass
+untouched, which the search escape above depends on.
 
 ## Two entry points per action
 
@@ -113,8 +117,8 @@ the user's KLAS *login*: KLAS often asks for push approval in its app, so
 `app/services/klas_session.py` keeps one working session per user in SQLite and every
 operation continues it through `open_session()`, which logs in silently (never with a
 push) only when the kept session is gone
-([KLAS.md](KLAS.md#login-and-the-second-factor)). `app/services/qr.py` instead keeps
-a module-level shared `aiohttp` session that `main.py` closes in its `finally`.
+([KLAS.md](KLAS.md#login-and-the-second-factor)). `app/services/qr.py` opens one
+`aiohttp` session per request (`new_session()`), so users never share cookies.
 
 ## Caches
 
@@ -134,9 +138,9 @@ Everything here is gone after a restart, by design or by omission:
 | Assignment list per user | `todos._items_cache` | 5 minutes, dropped on account deletion |
 | News | `app/services/news.py` | 1 hour |
 | Cafeteria menu | `app/services/food.py` | module-level cache |
-| Anti-spam timestamps | `AntiSpamMiddleware` | last message time per user |
+| Anti-spam timestamps | `AntiSpamMiddleware` | last message and last callback time per user |
+| Failed `/register` logins | `app/services/login_limiter.py` | per student number, one hour; a restart resets it |
 | Sent but not yet written down, and current quiet-hours holds | `_unrecorded`, `_holding` in `app/services/notifications.py` | see [NOTIFICATIONS.md](NOTIFICATIONS.md#notification-state-is-in-sqlite-not-in-memory) |
-| Shared library session | `app/services/qr.py` | closed by `main.py` |
 
 What must survive a restart is in SQLite instead — see [DATABASE.md](DATABASE.md) and
 [NOTIFICATIONS.md](NOTIFICATIONS.md).
