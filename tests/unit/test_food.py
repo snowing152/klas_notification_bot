@@ -71,7 +71,7 @@ def _stub_fetch(monkeypatch, *html_sequence, delay=0):
     """Stub aiohttp.ClientSession for fetch_weekly_menu; returns the call log."""
     calls = []
 
-    def factory():
+    def factory(**kwargs):
         return FakeFoodSession(html_sequence, calls, delay=delay)
 
     monkeypatch.setattr(food_service.aiohttp, "ClientSession", factory)

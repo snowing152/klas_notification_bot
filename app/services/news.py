@@ -20,7 +20,7 @@ async def fetch_news(news_type: str):
         url = "https://www.kw.ac.kr/ko/life/notice.jsp?srCategoryId="
 
     items = []
-    async with aiohttp.ClientSession() as session:
+    async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30)) as session:
         async with session.get(url) as response:
             beautiful_soup = BeautifulSoup(await response.text(), "html.parser")
             table_scroll_box = beautiful_soup.find("div", {"class": "board-list-box"})

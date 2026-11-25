@@ -38,3 +38,18 @@ async def test_qr_without_a_library_account_gets_a_login_button_not_just_text():
 
     markup = message.answer.call_args.kwargs["reply_markup"]
     assert markup.inline_keyboard[0][0].callback_data == "account_library"
+
+
+def test_library_tls_context_verifies_and_trusts_the_shipped_intermediate():
+    import ssl
+
+    from app.services.library import library_ssl_context
+
+    context = library_ssl_context()
+    assert context.verify_mode == ssl.CERT_REQUIRED
+    assert context.check_hostname
+    subjects = [dict(x[0] for x in ca["subject"]) for ca in context.get_ca_certs()]
+    assert any(
+        s.get("commonName") == "Sectigo Public Server Authentication CA OV R36"
+        for s in subjects
+    ), "the intermediate kupis.kw.ac.kr does not send is missing"

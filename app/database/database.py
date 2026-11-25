@@ -1,7 +1,7 @@
 import logging
 from enum import Enum
 
-from sqlalchemy import delete, exists, literal, select, union_all, update
+from sqlalchemy import delete, event, exists, literal, select, union_all, update
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.exc import SQLAlchemyError
@@ -20,8 +20,32 @@ from app.database.models import (
 from app.strings import Language
 from app.config import settings
 
+
+def make_engine(url: str):
+    """Build the async engine with the privacy settings the bot relies on.
+
+    hide_parameters keeps bound values (encrypted passwords, phone numbers,
+    student numbers) out of the text of a StatementError, which the handlers'
+    error logs would otherwise copy. secure_delete makes SQLite overwrite
+    deleted rows with zeros on every new connection; without it a deleted
+    password stays readable in the file's free pages, which defeats
+    "delete my data".
+    """
+    new_engine = create_async_engine(url, echo=False, hide_parameters=True)
+
+    @event.listens_for(new_engine.sync_engine, "connect")
+    def _set_secure_delete(dbapi_connection, _record):
+        cursor = dbapi_connection.cursor()
+        try:
+            cursor.execute("PRAGMA secure_delete=ON")
+        finally:
+            cursor.close()
+
+    return new_engine
+
+
 # Create an async engine
-engine = create_async_engine(settings.DATABASE_URL, echo=False)
+engine = make_engine(settings.DATABASE_URL)
 
 # Create an async session
 AsyncSessionLocal = sessionmaker(
@@ -133,7 +157,7 @@ async def get_all_users():
 
 
 async def delete_user(user_id: str):
-    """Delete user from database"""
+    """Delete user from database. True when the row is gone, including when there was none."""
     async with AsyncSessionLocal() as session:
         async with session.begin():
             try:
@@ -142,7 +166,7 @@ async def delete_user(user_id: str):
                     await session.delete(user)
                     await session.commit()
                     return True
-                return False
+                return True
             except SQLAlchemyError as e:
                 await session.rollback()
                 logging.error(f"Error deleting user: {e}")
@@ -200,7 +224,7 @@ async def get_all_library_users():
 
 
 async def delete_library_user(user_id: str):
-    """Delete library user from database"""
+    """Delete library user from database. True when the row is gone, including when there was none."""
     async with AsyncSessionLocal() as session:
         async with session.begin():
             try:
@@ -209,7 +233,7 @@ async def delete_library_user(user_id: str):
                     await session.delete(user)
                     await session.commit()
                     return True
-                return False
+                return True
             except SQLAlchemyError as e:
                 await session.rollback()
                 logging.error(f"Error deleting library user: {e}")

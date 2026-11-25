@@ -162,3 +162,37 @@ async def test_a_large_backlog_is_recorded_in_full(test_engine):
     assert await record_sent_notifications("1", batch) is RecordResult.RECORDED
 
     assert len(await get_sent_notifications("1")) == 650
+
+
+async def test_engine_hides_sql_parameters_in_errors(tmp_path):
+    """A StatementError is logged by the handlers; it must not carry the values."""
+    from sqlalchemy import text
+    from sqlalchemy.exc import StatementError
+
+    from app.database.database import make_engine
+
+    engine = make_engine(f"sqlite+aiosqlite:///{tmp_path / 'p.db'}")
+    try:
+        async with engine.connect() as conn:
+            with pytest.raises(StatementError) as excinfo:
+                await conn.execute(
+                    text("SELECT * FROM missing_table WHERE x = :v"),
+                    {"v": "super-secret-value"},
+                )
+        assert "super-secret-value" not in str(excinfo.value)
+    finally:
+        await engine.dispose()
+
+
+async def test_engine_turns_secure_delete_on_for_every_connection(tmp_path):
+    from sqlalchemy import text
+
+    from app.database.database import make_engine
+
+    engine = make_engine(f"sqlite+aiosqlite:///{tmp_path / 's.db'}")
+    try:
+        async with engine.connect() as conn:
+            value = (await conn.execute(text("PRAGMA secure_delete"))).scalar()
+        assert value == 1
+    finally:
+        await engine.dispose()

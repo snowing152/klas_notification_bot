@@ -86,8 +86,10 @@ async def test_cmd_unregister_deletes_every_trace_of_the_user(tmp_path, monkeypa
 
     message = make_message(user_id="42")
     message.delete = AsyncMock()
-    await cmd_unregister(message)
+    state = AsyncMock()
+    await cmd_unregister(message, state)
 
+    state.clear.assert_awaited_once()
     assert await get_user("42") is None
     assert await get_library_user("42") is None
     assert await get_sent_notifications("42") == {}
@@ -107,6 +109,25 @@ async def test_cmd_unregister_works_for_a_user_with_nothing_stored(tmp_path, mon
     message = make_message(user_id="nobody")
     message.delete = AsyncMock()
 
-    await cmd_unregister(message)
+    await cmd_unregister(message, AsyncMock())
 
     assert message.answer.call_args[0][0] == Strings.get("unregistered", Language.EN)
+
+
+@pytest.mark.asyncio
+async def test_cmd_unregister_tells_the_user_when_a_deletion_failed(tmp_path, monkeypatch):
+    from app.handlers import auth
+    from app.handlers import student_info
+
+    monkeypatch.setattr(student_info, "PHOTOS_DIR", tmp_path)
+
+    async def failing(user_id):
+        return False
+
+    monkeypatch.setattr(auth, "delete_klas_session", failing)
+    message = make_message(user_id="43")
+    message.delete = AsyncMock()
+
+    await auth.cmd_unregister(message, AsyncMock())
+
+    assert message.answer.call_args[0][0] == Strings.get("delete_data_failed", Language.EN)

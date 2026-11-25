@@ -264,6 +264,17 @@ covered by [Voice and other media are refused](#voice-and-other-media-are-refuse
   on Railway, where the file handler is skipped.
 - **Where:** `build_handlers` in `app/utils/log_format.py`.
 
+### A QR photo is not deleted after a restart
+
+- **Symptom:** a student keeps a library QR pass in the chat after a restart that came
+  during the 30 seconds it should have lived. The pass encodes library credentials.
+- **Cause:** `cmd_qr` sends the photo, then sleeps 30 seconds in the handler and deletes
+  it afterwards. Nothing stores the pending deletion, so a restart (or a crash) in that
+  window loses it. The temporary PNG on disk is removed in a `finally` and may also be
+  left behind by a hard kill.
+- **Workaround:** the student deletes the message by hand.
+- **Where:** `cmd_qr` in `app/handlers/library.py`.
+
 ### The systemd restart limit is not applied
 
 - **Symptom:** a bot that fails at every start is restarted every ten seconds

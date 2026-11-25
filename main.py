@@ -15,7 +15,6 @@ from app.bot import dp, bot, setup_handlers
 from app.database.database import init_db
 from app.services.announcements import announce_pending
 from app.services.notifications import start_notification_service
-from app.services.qr import close_session as close_qr_session
 from app.menu import initialize_bot_menu
 
 
@@ -65,7 +64,6 @@ async def main():
         logging.error(f"Error in main loop: {e}")
         raise
     finally:
-        await close_qr_session()
         await bot.session.close()
 
 
