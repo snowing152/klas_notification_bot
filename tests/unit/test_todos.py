@@ -515,3 +515,28 @@ async def test_a_filter_tap_that_telegram_refuses_is_reported_not_swallowed(capl
         Strings.get("unexpected_error", Language.EN)
     )
     assert "can't parse entities" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_a_deleted_user_is_not_served_from_a_cache_written_after_deletion():
+    """A fetch that was in flight when the data was deleted writes its entry
+    after forget_cached_items ran; the cache must not answer for them."""
+    from app.database.database import delete_user
+
+    await _register("710")
+    todos._items_cache["710"] = (
+        todos.time.monotonic(),
+        [
+            {
+                "type": "homeworks",
+                "subject": "A",
+                "title": "Secret",
+                "expire_at": timezone.now() + datetime.timedelta(days=1),
+            }
+        ],
+    )
+
+    await delete_user("710")
+
+    assert await todos._load_items("710") == ("no_user", None)
+    assert "710" not in todos._items_cache

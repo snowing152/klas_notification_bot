@@ -91,7 +91,10 @@ factor, so it is never logged either. Only cookies for `klas.kw.ac.kr` are store
 - **Delete the user's message after credential input**, as every step of `/register`
   and `/lregister` does.
 - **"Delete my data" means all of it.** `auth.delete_all_user_data` is the one place; a
-  new table, file or cache holding something per user is added there in the same change.
+  new table, file or cache holding something per user is added there in the same change
+  (that includes the in-memory state: `todos.forget_cached_items`,
+  `notifications.forget_user`). `/register` with another student number clears the
+  notification history, the `/show` cache and the ID photo of the old account too.
 - **A captured KLAS request contains live session cookies.** Delete it when done; never
   commit it ([KLAS.md](KLAS.md#when-klas-changes)).
 - Only `ADMIN_ID` may broadcast. The check is `message.from_user.id != settings.ADMIN_ID`

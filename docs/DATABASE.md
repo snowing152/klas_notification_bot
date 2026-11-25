@@ -33,7 +33,13 @@ counts as personal data and how the passwords are encrypted is in
 [SECURITY.md](SECURITY.md).
 
 Rows in `notification_state` and `user_settings` are created with defaults on first
-read (`get_notification_state`, `get_user_settings`). The database functions catch
+read (`get_notification_state`, `get_user_settings`), but only for a registered user,
+checked in the same transaction like `update_klas_session`: for an unregistered one they
+return `None`, and `record_sent_notifications` writes nothing, so a cycle running while
+someone deletes their data cannot bring rows (with assignment titles) back.
+`record_sent_notifications` inserts with `ON CONFLICT DO NOTHING`: the key is only
+(user, assignment key, kind), and a pair that is listed twice or already stored must not
+reject the rest of the batch. The database functions catch
 `SQLAlchemyError` themselves and return `None`, `False` or an empty list instead of
 raising — read each one's fallback before relying on it: `get_sent_notifications`
 returns `None` on purpose, and `has_seen_announcement` answers `True` on an error

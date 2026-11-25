@@ -332,13 +332,25 @@ async def _record_sent(user_id: str, entries) -> None:
     The message is already in the chat when this runs, so a failed write must
     not be forgotten: the next cycle would find no row and send it again.
     """
-    pending = _unrecorded.pop(user_id, []) + list(entries)
+    # Order-preserving dedupe: the same pair can be owed twice (two assignments
+    # with one title), and the database ignores repeats anyway.
+    pending = list(dict.fromkeys(_unrecorded.pop(user_id, []) + list(entries)))
     if pending and not await record_sent_notifications(user_id, pending):
         _unrecorded[user_id] = pending
         logging.error(
             f"Could not record {len(pending)} sent notifications for {user_id}; "
             f"kept in memory until the database takes them"
         )
+
+
+def forget_user(user_id: str) -> None:
+    """Drop the in-memory per-user state (unrecorded sends, quiet-hour holds).
+
+    Called when a user's data is deleted: otherwise owed entries, which carry
+    assignment titles, would be written again for them or linger in memory.
+    """
+    _unrecorded.pop(user_id, None)
+    _holding.pop(user_id, None)
 
 
 async def _process_user(user) -> tuple[bool, int]:
@@ -356,6 +368,12 @@ async def _process_user(user) -> tuple[bool, int]:
         user_lang = await get_user_language(user_id) or Language.EN
         state = await get_notification_state(user_id)
         user_settings = await get_user_settings(user_id)
+        if state is None or user_settings is None:
+            # Unreadable or no longer registered. Carrying on with defaults
+            # would re-seed (recording new work as announced, unsent) and
+            # ignore the user's switches, so skip the cycle.
+            logging.warning(f"Could not read notification settings for {user_id}")
+            return False, 0
 
         # First, whatever an earlier cycle delivered and could not write down.
         await _record_sent(user_id, ())

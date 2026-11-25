@@ -1,5 +1,6 @@
 import logging
 from sqlalchemy import delete, select, update
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
@@ -232,18 +233,33 @@ async def get_sent_notifications(user_id: str) -> dict[str, set[str]]:
 
 
 async def record_sent_notifications(user_id: str, entries) -> bool:
-    """Mark (assignment_key, kind) pairs as delivered. Called after a send."""
+    """Mark (assignment_key, kind) pairs as delivered. Called after a send.
+
+    A pair that is already stored, or listed twice, is skipped rather than
+    failing the batch: the key is only (user, title, kind), so two same-titled
+    assignments produce the same pair, and one rejected row used to make every
+    later write fail with it. Only for a registered user, checked in the same
+    transaction, so a cycle that was running while the user deleted their data
+    cannot bring assignment titles back. Answers False when nothing was
+    written because of an error; True when the user is gone (nothing to keep).
+    """
     if not entries:
         return True
 
+    rows = [
+        {"user_id": user_id, "assignment_key": key, "kind": kind}
+        for key, kind in entries
+    ]
     async with AsyncSessionLocal() as session:
         async with session.begin():
             try:
-                session.add_all(
-                    SentNotification(
-                        user_id=user_id, assignment_key=key, kind=kind
-                    )
-                    for key, kind in entries
+                if await session.get(User, user_id) is None:
+                    logging.info(f"Not recording notifications for unregistered {user_id}")
+                    return True
+                await session.execute(
+                    sqlite_insert(SentNotification)
+                    .values(rows)
+                    .on_conflict_do_nothing()
                 )
                 await session.commit()
                 return True
@@ -275,12 +291,19 @@ async def prune_sent_notifications(user_id: str, current_keys) -> bool:
 
 
 async def get_notification_state(user_id: str):
-    """The user's notification bookkeeping row, created on first use."""
+    """The user's notification bookkeeping row, created on first use.
+
+    None when the database could not be read, and also when the user is not
+    registered (nothing is created for them): callers skip such a user.
+    """
     async with AsyncSessionLocal() as session:
         async with session.begin():
             try:
                 state = await session.get(NotificationState, user_id)
                 if state is None:
+                    if await session.get(User, user_id) is None:
+                        logging.info(f"Not creating notification state for unregistered {user_id}")
+                        return None
                     state = NotificationState(
                         user_id=user_id,
                         seeded=False,
@@ -426,12 +449,19 @@ async def delete_klas_session(user_id: str) -> bool:
 
 
 async def get_user_settings(user_id: str):
-    """The user's notification preferences, created with defaults on first use."""
+    """The user's notification preferences, created with defaults on first use.
+
+    None when the database could not be read, and also when the user is not
+    registered (no row is created for them).
+    """
     async with AsyncSessionLocal() as session:
         async with session.begin():
             try:
                 settings_row = await session.get(UserSettings, user_id)
                 if settings_row is None:
+                    if await session.get(User, user_id) is None:
+                        logging.info(f"Not creating settings for unregistered {user_id}")
+                        return None
                     settings_row = UserSettings(user_id=user_id)
                     session.add(settings_row)
                     await session.commit()

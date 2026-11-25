@@ -29,6 +29,7 @@ from app.services.klas_session import clear_password_rejected, mark_password_rej
 from app.utils.language_utils import get_user_language_with_fallback
 from app.handlers.student_info import student_photo_path
 from app.handlers.todos import forget_cached_items
+from app.services.notifications import forget_user as forget_notifications
 
 
 # Define states for registration
@@ -97,9 +98,16 @@ async def process_password(message: types.Message, state: FSMContext):
     async def save_credentials() -> bool:
         existing = await get_user(user_id)
         if existing is None or existing.username != username:
-            # A session kept for another student number must not outlive
-            # the switch, whatever happens to the login that follows.
+            # Everything kept for another student number must not outlive
+            # the switch, whatever happens to the login that follows: the
+            # session, the notification history (it would count the new
+            # account's assignments as already announced), the /show cache
+            # and the ID photo.
             await delete_klas_session(user_id)
+            await delete_notification_data(user_id)
+            forget_notifications(user_id)
+            forget_cached_items(user_id)
+            student_photo_path(user_id).unlink(missing_ok=True)
         else:
             # Same student, new password: the kept session still works, and
             # re-login is allowed again now that the password is fresh.
@@ -190,6 +198,7 @@ async def delete_all_user_data(user_id: str) -> None:
     await delete_user_settings(user_id)
     student_photo_path(user_id).unlink(missing_ok=True)
     forget_cached_items(user_id)
+    forget_notifications(user_id)
 
 
 async def cmd_unregister(message: types.Message):

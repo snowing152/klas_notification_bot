@@ -194,7 +194,8 @@ covered by [Voice and other media are refused](#voice-and-other-media-are-refuse
 
 - **Symptom:** an assignment renamed in KLAS is announced again as new and gets its
   reminders again; two assignments of the same type and title in one subject share one
-  set of notifications.
+  set of notifications (the shared pair is written once; the duplicate no longer blocks
+  recording).
 - **Cause:** KLAS gives assignments no stable id, so the key is subject + type + title.
 - **Workaround:** none.
 - **Where:** `assignment_key` in `app/services/notifications.py`.

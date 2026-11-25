@@ -12,6 +12,12 @@ from app.services import announcements
 from app.strings import Language, Strings
 
 
+@pytest.fixture(autouse=True)
+async def registered_user():
+    """Preferences are only kept for a registered user."""
+    await save_user("555", "student", "enc", Language.EN)
+
+
 def make_message(user_id="555", language_code="en"):
     from_user = AsyncMock()
     from_user.id = user_id

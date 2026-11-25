@@ -1,8 +1,12 @@
 import pytest
 from sqlalchemy import select
 
+from app.database import database as db
 from app.database.database import (
+    get_notification_state,
+    get_sent_notifications,
     init_db,
+    record_sent_notifications,
     save_user,
     get_user,
     get_user_language,
@@ -10,7 +14,7 @@ from app.database.database import (
     set_user_language,
     update_user_settings,
 )
-from app.database.models import User
+from app.database.models import NotificationState, User, UserSettings
 from app.strings import Language
 
 
@@ -80,3 +84,57 @@ async def test_init_db_applies_a_data_fix_only_once(test_engine):
     await init_db()
 
     assert (await get_user_settings("night_owl")).quiet_start == 23
+
+
+@pytest.mark.asyncio
+async def test_a_batch_with_an_internal_duplicate_is_stored_whole(test_engine):
+    """Two same-titled assignments give the same (key, kind) pair; one
+    rejected row used to reject the whole batch."""
+    await save_user("1", "student", "enc", Language.EN)
+    batch = [("A_homeworks_Report", "new"), ("A_homeworks_Report", "new"), ("B_quizzes_Q", "t3")]
+
+    assert await record_sent_notifications("1", batch) is True
+
+    assert await get_sent_notifications("1") == {
+        "A_homeworks_Report": {"new"},
+        "B_quizzes_Q": {"t3"},
+    }
+
+
+@pytest.mark.asyncio
+async def test_a_batch_with_an_already_stored_pair_is_stored_whole(test_engine):
+    await save_user("1", "student", "enc", Language.EN)
+    await record_sent_notifications("1", [("A_homeworks_Report", "new")])
+
+    ok = await record_sent_notifications(
+        "1", [("A_homeworks_Report", "new"), ("A_homeworks_Report", "t24")]
+    )
+
+    assert ok is True
+    assert await get_sent_notifications("1") == {"A_homeworks_Report": {"new", "t24"}}
+
+
+@pytest.mark.asyncio
+async def test_nothing_is_recorded_for_an_unregistered_user(test_engine):
+    """A cycle running while the user deleted their data must not bring
+    assignment titles back."""
+    assert await record_sent_notifications("gone", [("A_homeworks_Report", "new")]) is True
+
+    assert await get_sent_notifications("gone") == {}
+
+
+@pytest.mark.asyncio
+async def test_state_and_settings_are_not_created_for_an_unregistered_user(test_engine):
+    assert await get_notification_state("gone") is None
+    assert await get_user_settings("gone") is None
+    async with db.AsyncSessionLocal() as session:
+        assert await session.get(NotificationState, "gone") is None
+        assert await session.get(UserSettings, "gone") is None
+
+
+@pytest.mark.asyncio
+async def test_state_and_settings_are_created_for_a_registered_user(test_engine):
+    await save_user("1", "student", "enc", Language.EN)
+
+    assert (await get_notification_state("1")).seeded is False
+    assert (await get_user_settings("1")).quiet_hours is True

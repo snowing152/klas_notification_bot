@@ -67,6 +67,12 @@ def fresh_cycle_memory():
     notifications._unrecorded.clear()
 
 
+@pytest.fixture(autouse=True)
+async def registered_user():
+    """The notification tables only take rows for a registered user."""
+    await save_user("1", "student1", "enc", Language.EN)
+
+
 def at_hour(hour):
     """What FakeClock(hour) reads - the base a fixture's deadlines are set from."""
     return datetime.datetime(2026, 9, 20, hour, 0)
@@ -974,3 +980,80 @@ async def test_new_assignments_are_split_by_day_and_recorded_per_chunk(monkeypat
     texts = [text for _, text in flaky.sent + working.sent]
     for day in ("Tomorrow", "Tue, 22 Sep", "Wed, 23 Sep"):
         assert sum(f"<b>{day}" in text for text in texts) == 1
+
+
+async def test_a_duplicate_pair_does_not_block_later_recording():
+    """Two same-titled assignments owe the same pair. The rejected batch used
+    to stay in _unrecorded and fail every later write with it."""
+    await notifications._record_sent(
+        "1", [("A_homeworks_Report", "new"), ("A_homeworks_Report", "new")]
+    )
+    await notifications._record_sent("1", [("B_quizzes_Q", "new")])
+
+    assert notifications._unrecorded == {}
+    assert await get_sent_notifications("1") == {
+        "A_homeworks_Report": {"new"},
+        "B_quizzes_Q": {"new"},
+    }
+
+
+async def test_a_poisoned_unrecorded_batch_recovers():
+    from app.database.database import record_sent_notifications
+
+    await record_sent_notifications("1", [("A_homeworks_Report", "new")])
+    notifications._unrecorded["1"] = [
+        ("A_homeworks_Report", "new"),
+        ("A_homeworks_Report", "new"),
+    ]
+
+    await notifications._record_sent("1", [("B_quizzes_Q", "t3")])
+
+    assert notifications._unrecorded == {}
+    assert await get_sent_notifications("1") == {
+        "A_homeworks_Report": {"new"},
+        "B_quizzes_Q": {"t3"},
+    }
+
+
+async def test_a_failed_state_read_does_not_reseed_the_user(monkeypatch):
+    """None from the database used to read as "never seeded", which recorded
+    the real new assignments as announced without sending them."""
+    await update_notification_state("1", seeded=True)
+    api = FakeApi(todo_list=make_todo(hours=100))
+    bot = _patch_user_deps(monkeypatch, api)
+
+    async def unreadable(user_id):
+        return None
+
+    monkeypatch.setattr(notifications, "get_notification_state", unreadable)
+
+    assert await notifications._process_user(FakeUser("1")) == (False, 0)
+    assert bot.sent == []
+    assert await get_sent_notifications("1") == {}
+
+
+async def test_failed_settings_read_does_not_fall_back_to_defaults(monkeypatch):
+    """A user who switched alerts off would get them again."""
+    await update_notification_state("1", seeded=True)
+    await update_user_settings("1", deadline_alerts=False, new_assignment_alerts=False)
+    bot = _patch_user_deps(monkeypatch, FakeApi(todo_list=make_todo(hours=20)))
+
+    async def unreadable(user_id):
+        return None
+
+    monkeypatch.setattr(notifications, "get_user_settings", unreadable)
+
+    assert await notifications._process_user(FakeUser("1")) == (False, 0)
+    assert bot.sent == []
+
+
+async def test_forget_user_clears_the_in_memory_state():
+    notifications._unrecorded["1"] = [("A_homeworks_Report", "new")]
+    notifications._holding["1"] = {"threshold=3h"}
+    notifications._unrecorded["2"] = [("B_quizzes_Q", "new")]
+
+    notifications.forget_user("1")
+
+    assert "1" not in notifications._unrecorded
+    assert "1" not in notifications._holding
+    assert "2" in notifications._unrecorded
