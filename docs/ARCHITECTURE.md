@@ -8,7 +8,7 @@ concurrently, the order handlers are registered in, and what is held in memory.
 Telegram bot (aiogram 3, asyncio) for Kwangwoon University students. It scrapes/calls
 three unofficial KW endpoints on the user's behalf — KLAS (`klas.kw.ac.kr`, assignments
 and grades), the mobile-ID service (`mobileid.kw.ac.kr`, library QR), and the public
-`kw.ac.kr` site (news, cafeteria menu) — plus Google Gemini for the chat assistant.
+`kw.ac.kr` site (news, cafeteria menu).
 Python 3.12 (`.python-version`); `requirements.txt` pins exact versions.
 
 This is a fork of ChoiVadim/klas_notification_bot, continued with the original author's
@@ -23,7 +23,6 @@ By module, as the code stands:
 | `mobileid.kw.ac.kr` | `app/services/qr.py` | library login and the QR pass |
 | `kupis.kw.ac.kr` | `app/services/library.py` | `/search`, the library catalogue |
 | `www.kw.ac.kr` | `app/services/news.py`, `app/services/food.py` | news and the cafeteria menu |
-| Google Gemini | `app/services/llm.py` | the chat assistant (`GEMINI_API_KEY`, optional) |
 | Telegram Bot API | `app/bot.py` | everything the user sees |
 
 None of the KW hosts is an official API; see [KNOWN_ISSUES.md](KNOWN_ISSUES.md).
@@ -63,8 +62,8 @@ policy in `railway.json` and `Restart=on-failure` in `botdaemon.service` act on 
 
 `setup_handlers` registers `common` *last*
 because `common.other_message` is a catch-all `dp.message.register` with no filter — it
-swallows anything reaching it and routes free text to the LLM. Anything registered after
-it would never fire. `callbacks.process_callback_query` is likewise unfiltered for callback queries, so
+swallows anything reaching it and answers free text with a hint to use the menu buttons.
+Anything registered after it would never fire. `callbacks.process_callback_query` is likewise unfiltered for callback queries, so
 every module owning its own callbacks — `auth`'s `klas_login` button, `settings`,
 `account`, and `todos`' `show_*` filter buttons — is registered before it; anything registered after would never see a tap.
 Registration and library-registration flows are aiogram FSM states
@@ -135,7 +134,6 @@ Everything here is gone after a restart, by design or by omission:
 | Assignment list per user | `todos._items_cache` | 5 minutes, dropped on account deletion |
 | News | `app/services/news.py` | 1 hour |
 | Cafeteria menu | `app/services/food.py` | module-level cache |
-| Chat-assistant history | `app/utils/chat_history.py` | last 10 messages per chat |
 | Anti-spam timestamps | `AntiSpamMiddleware` | last message time per user |
 | Sent but not yet written down, and current quiet-hours holds | `_unrecorded`, `_holding` in `app/services/notifications.py` | see [NOTIFICATIONS.md](NOTIFICATIONS.md#notification-state-is-in-sqlite-not-in-memory) |
 | Shared library session | `app/services/qr.py` | closed by `main.py` |

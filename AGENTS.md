@@ -8,7 +8,7 @@ what has to be known before touching anything and points at `docs/` for the rest
 
 Telegram bot (aiogram 3, asyncio) for Kwangwoon University students: KLAS assignments,
 deadline notifications and grades, the library QR pass, campus news and the cafeteria
-menu, plus a Google Gemini chat assistant. It calls unofficial KW endpoints on the user's
+menu. It calls unofficial KW endpoints on the user's
 behalf and keeps their KLAS and library passwords Fernet-encrypted in SQLite.
 Python 3.12 (`.python-version`); `requirements.txt` pins exact versions. A fork of
 ChoiVadim/klas_notification_bot, continued with the original author's permission.

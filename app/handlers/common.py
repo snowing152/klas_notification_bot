@@ -6,10 +6,7 @@ from aiogram.types import FSInputFile
 
 from app.bot import bot
 from app.strings import Strings
-from app.services.llm import generate_response
 from app.keyboards import create_language_keyboard, create_donation_keyboard, create_quick_access_keyboard
-from app.utils.typing_animation import show_typing_action
-from app.utils.chat_history import get_chat_history, store_message_in_history
 from app.utils.language_utils import get_user_language_with_fallback
 
 
@@ -149,24 +146,10 @@ async def other_message(message: types.Message):
                 "This content type is not available in the chat. Please use the command from the bot menu."
             )
         else:
-            # Get previous messages
-            previous_messages = get_chat_history(message.chat.id)
-
-            # Start "typing" action to show the bot is processing
-            async with show_typing_action(message.chat.id):
-                response = await generate_response(message.text, previous_messages)
-
-                # Store messages in history
-                store_message_in_history(message.chat.id, message.text, "user")
-                store_message_in_history(message.chat.id, response, "assistant")
-
-            # Send the response after typing is complete
             await message.reply(
-                response, 
-                parse_mode="MarkdownV2",
-                reply_markup=create_quick_access_keyboard(user_lang)
+                Strings.get("menu_only_hint", user_lang),
+                reply_markup=create_quick_access_keyboard(user_lang),
             )
-            logging.info(f"User {message.from_user.id} asked a question (LLM)")
 
     except Exception as e:
         logging.error(f"Error in other_message: {e}")

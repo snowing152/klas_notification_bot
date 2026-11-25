@@ -28,7 +28,7 @@ def quick_access_labels(key: str, *legacy: str) -> frozenset:
     filter. The reply keyboard is client-side and only refreshes on the next
     message carrying reply_markup, so a user who just switched language may
     still be looking at labels in the old one - matching against all three
-    survives that instead of routing the tap to the LLM.
+    survives that instead of treating the tap as plain text.
 
     `legacy` adds pre-localization button text that may still be cached on a
     client from before this button's label changed - same reasoning, just

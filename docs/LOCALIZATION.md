@@ -77,7 +77,7 @@ So when a button label changes, the old text is appended as a `legacy` argument 
 call site rather than dropped — `quick_access_labels("button_todos", "📋 Todos")` in
 `app/handlers/todos.py` and `quick_access_labels("button_qr", "🔍 QR")` in
 `app/handlers/library.py` both carry one. A tap whose text matches nothing falls through
-to `common.other_message` and is answered by the LLM.
+to `common.other_message` and is answered with the `menu_only_hint` reply.
 
 ## Text that is not localized
 

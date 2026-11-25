@@ -26,7 +26,6 @@ with `python-dotenv`; real environment variables win over it.
 |---|---|---|---|
 | `BOT_TOKEN` | yes | — | from @BotFather; import raises without it |
 | `ADMIN_ID` | yes | — | numeric Telegram id allowed to use `/notify`; import raises unless it is an integer |
-| `GEMINI_API_KEY` | no | empty | without it the chat assistant answers that it is not configured; everything else works |
 | `DATA_DIR` | on Railway | working directory | where `bot_users.db` and `encryption_key.key` live; must exist and be writable ([DATABASE.md](DATABASE.md)) |
 | `ENCRYPTION_KEY` | on Railway | empty | Fernet key; when empty, `<DATA_DIR>/encryption_key.key` is used ([SECURITY.md](SECURITY.md)) |
 | `DATABASE_URL` | no | SQLite file in `DATA_DIR` | full SQLAlchemy URL; leave unset |
@@ -49,7 +48,7 @@ empty `KW_TZ` or `DATABASE_URL` is taken literally and stops the bot at startup,
 1. **Attach a volume** and mount it, for example at `/data`. The container filesystem is
    wiped on every deploy; without a volume `bot_users.db` goes with it.
 2. **Set the variables**: `BOT_TOKEN`, `ADMIN_ID`, `DATA_DIR` (the mount path),
-   `ENCRYPTION_KEY`, and `GEMINI_API_KEY` if the assistant is wanted.
+   and `ENCRYPTION_KEY`.
 3. **`ENCRYPTION_KEY` has to be a variable here.** A key file on an ephemeral filesystem
    disappears with the deploy, and the next start then has no key for the passwords
    already in the database. Generate it once, before the first user registers:
@@ -124,7 +123,6 @@ Lines worth knowing:
 | `Could not log in as user <id>` | KLAS refused or dropped a login; all users at once points at KLAS |
 | `Failed to retrieve <url>. Status code: ...` / `Non-JSON response from <url>` | an endpoint changed or is down ([KLAS.md](KLAS.md#when-klas-changes)) |
 | `Incomplete assignment data for subject ...` | one category of one subject could not be read |
-| `Error generating response: ...` | the Gemini call failed; a retired model name shows up here |
 | `DATA_DIR points at ..., which does not exist` | inside an `Uncaught exception` entry: no volume mounted; the bot did not start |
 
 Logs carry Telegram user ids and event kinds. They must never carry a password
@@ -136,7 +134,7 @@ Logs carry Telegram user ids and event kinds. They must never carry a password
 |---|---|---|
 | `bot_users.db` | `DATA_DIR` | every user has to register again |
 | The Fernet key | `ENCRYPTION_KEY`, or `encryption_key.key` in `DATA_DIR` | every stored password is undecryptable, permanently |
-| `BOT_TOKEN`, `ADMIN_ID`, `GEMINI_API_KEY` | platform variables or `.env` | the bot does not start, or the assistant is off |
+| `BOT_TOKEN`, `ADMIN_ID` | platform variables or `.env` | the bot does not start |
 
 Cached ID photos (`images/photos/`) are written under the working directory, not
 `DATA_DIR`, and are simply fetched again when missing.

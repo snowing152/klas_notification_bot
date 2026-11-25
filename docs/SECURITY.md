@@ -34,8 +34,8 @@ On disk outside the database, relative to the working directory:
 | The library QR pass — it encodes library credentials | `images/qr_<telegram id>_*.png` | deleted right after sending; one can be left behind by a crash |
 | Log lines with Telegram user ids and event kinds | `logs/kwbot.log` (not on Railway) | never rotated |
 
-In memory only: credentials typed so far in a registration flow, each user's assignment
-list for five minutes, and the last ten messages of each chat with the assistant
+In memory only: credentials typed so far in a registration flow and each user's assignment
+list for five minutes
 ([ARCHITECTURE.md](ARCHITECTURE.md#what-lives-only-in-memory)).
 
 Grades and the student record shown by `/info` are fetched on request and not stored.
@@ -43,9 +43,6 @@ Grades and the student record shown by `/info` are fetched on request and not st
 ## What leaves the bot
 
 - **KW services** receive the user's own credentials; that is the feature.
-- **Google Gemini** receives every free-text message sent to the bot, along with that
-  chat's last ten messages. Nothing from the database is added to the prompt. A user who
-  types personal data into the chat sends it to Google.
 - **Telegram** carries everything. The bot deletes the user's message after credential
   input and deletes the QR photo it sent after 30 seconds.
 
@@ -89,8 +86,8 @@ factor, so it is never logged either. Only cookies for `klas.kw.ac.kr` are store
   service. `app/services/qr.py` builds its exceptions so that only a result code reaches
   the log, because the service echoes the student id and phone number back;
   `notifications._send` logs the user and the kind of message, never its text.
-- **Never log or print `BOT_TOKEN`, `ENCRYPTION_KEY` or `GEMINI_API_KEY`**, and do not
-  paste them into an issue, a commit message or a chat with an assistant.
+- **Never log or print `BOT_TOKEN` or `ENCRYPTION_KEY`**, and do not
+  paste them into an issue, a commit message or a chat with an AI tool.
 - **Delete the user's message after credential input**, as every step of `/register`
   and `/lregister` does.
 - **"Delete my data" means all of it.** `auth.delete_all_user_data` is the one place; a
@@ -105,7 +102,6 @@ factor, so it is never logged either. Only cookies for `klas.kw.ac.kr` are store
 | Leaked | Do |
 |---|---|
 | `BOT_TOKEN` | revoke it in @BotFather (`/revoke`), set the new token, redeploy. Users and data are unaffected. |
-| `GEMINI_API_KEY` | delete the key in the Google console, create a new one, redeploy. |
 | The database without the key | passwords and sessions stay encrypted; logins, phone numbers and assignment titles are exposed. Tell the users. |
 | The key, or the database with the key | every stored password and every live KLAS session is exposed. Stop the bot, tell the users to change their KLAS and library passwords, and start over with a new key and an empty database. |
 

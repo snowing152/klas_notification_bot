@@ -77,9 +77,6 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
     BOT_TOKEN: str = _required_bot_token()
-    # Optional: without it the AI chat replies with an error, but the bot still
-    # starts and every KLAS/library/news feature keeps working.
-    GEMINI_API_KEY: str = os.getenv("GEMINI_API_KEY", "")
     DATABASE_URL: str = os.getenv("DATABASE_URL") or _default_database_url()
     NOTIFICATION_CHECK_INTERVAL: int = 1800  # 30 minutes
     ADMIN_ID: int = _required_admin_id()

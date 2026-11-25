@@ -19,7 +19,7 @@ moment you hold other people's university passwords.
 | Encryption key | <!-- FILL IN: held as the ENCRYPTION_KEY variable or as a key file, and where its backup copy is kept --> |
 | Database backups | <!-- FILL IN: whether any exist, where, how often, who can reach them --> |
 | Registered users | <!-- FILL IN: rough count, so the new maintainer knows the blast radius --> |
-| Costs | <!-- FILL IN: what is paid for (hosting plan, Gemini usage), by whom, on which billing account --> |
+| Costs | <!-- FILL IN: what is paid for (hosting plan), by whom, on which billing account --> |
 
 What the repository does say: the code is at `github.com/snowing152/klas_notification_bot`,
 a fork of `github.com/ChoiVadim/klas_notification_bot` continued with the original
@@ -55,15 +55,6 @@ poll the same token), copy `bot_users.db` to the new volume, set the same
 
 <!-- FILL IN: the hosting account or workspace that owns the project today, and who else has access -->
 <!-- FILL IN: whether the project is being transferred or re-created -->
-
-### The Gemini key
-
-`GEMINI_API_KEY` belongs to a Google account and its usage is charged to it. The new
-maintainer creates their own key, replaces the variable and redeploys; the old key is
-then deleted. Nothing in the database depends on it. The model name is a constant in
-`app/services/llm.py` ([KNOWN_ISSUES.md](KNOWN_ISSUES.md)).
-
-<!-- FILL IN: the Google account or project that owns the current key -->
 
 ### `ADMIN_ID`
 
@@ -139,7 +130,7 @@ instance is set up (see the table at the top; [DEPLOYMENT.md](DEPLOYMENT.md) has
 targets). After a deploy, check the log for `Database initialized successfully` and
 `Bot menu initialized successfully!`, and send the bot `/start`.
 
-A restart costs: registrations in progress, the assistant's chat history, and up to 30
+A restart costs: registrations in progress and up to 30
 minutes' delay on reminders ([KNOWN_ISSUES.md](KNOWN_ISSUES.md)). Sent notifications are
 not repeated.
 
@@ -160,7 +151,7 @@ away from the key, and delete old ones — each is a full set of credentials.
 ### Dependencies
 
 `requirements.txt` pins exact versions. Upgrade deliberately, one at a time where it
-matters (`aiogram`, `SQLAlchemy`, `cryptography`, `google-genai`), and run the suite.
+matters (`aiogram`, `SQLAlchemy`, `cryptography`), and run the suite.
 Keep `tzdata`: it is what gives the bot Seoul time on a host with no tz database
 ([TIMEZONE.md](TIMEZONE.md)).
 
@@ -199,7 +190,6 @@ New maintainer:
 - [ ] Encryption key stored in your own password manager
 - [ ] Key verified against the live database (all passwords decrypt)
 - [ ] `BOT_TOKEN` revoked and reissued under your account, variable updated
-- [ ] `GEMINI_API_KEY` replaced with your own
 - [ ] `ADMIN_ID` set to your Telegram id (a bare `/notify` answers with its usage line; one with text goes to every user)
 - [ ] Exactly one instance is polling
 - [ ] Logs reachable; a `Notification cycle finished` line seen

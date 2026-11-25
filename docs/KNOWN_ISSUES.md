@@ -74,15 +74,6 @@ covered by [Voice and other media are refused](#voice-and-other-media-are-refuse
 - **Workaround:** the user runs `/register` again.
 - **Where:** `process_klas_relogin` in `app/handlers/auth.py`.
 
-### The Gemini model name is hard-coded
-
-- **Symptom:** the chat assistant answers every message with "I encountered an error
-  processing your request"; the log has `Error generating response:` with a 404.
-- **Cause:** `MODEL` in `app/services/llm.py` names one specific model, and providers
-  retire model names.
-- **Workaround:** change `MODEL` to a current one and redeploy.
-- **Where:** `app/services/llm.py`.
-
 ### A stalled KLAS endpoint holds the request slots
 
 - **Symptom:** while KLAS accepts connections but does not answer, `/show` waits about a
@@ -99,9 +90,9 @@ covered by [Voice and other media are refused](#voice-and-other-media-are-refuse
 ### A restart loses a registration in progress
 
 - **Symptom:** a user who was in the middle of `/register`, `/lregister` or a book
-  search when the bot restarted gets their next message answered by the chat assistant
+  search when the bot restarted gets their next message answered with the menu hint
   instead — including, if they were at that step, the password they just typed, which is
-  then neither deleted from the chat nor kept out of the assistant's prompt.
+  then not deleted from the chat.
 - **Cause:** FSM state is in aiogram's `MemoryStorage`.
 - **Workaround:** the user starts the command again. Avoid deploying at peak hours.
 - **Where:** `storage = MemoryStorage()` in `app/bot.py`; states in
@@ -135,21 +126,19 @@ covered by [Voice and other media are refused](#voice-and-other-media-are-refuse
 
 - **Symptom:** a voice message, photo, document, video, sticker or location gets
   "... is not available in the chat. Please use the command from the bot menu."
-- **Cause:** not implemented; the catch-all only passes plain text to the assistant.
+- **Cause:** not implemented; the catch-all only answers plain text with a hint to use the menu.
 - **Workaround:** none.
 - **Where:** `other_message` in `app/handlers/common.py` — `TODO: Add voice support and
-  handle other content types` (line 96) and `TODO: Add voice support` (line 127).
+  handle other content types` (line 93) and `TODO: Add voice support` (line 124).
 
 ### Some replies are English-only
 
 - **Symptom:** a Korean- or Russian-speaking user sees English for: the "not available
-  in the chat" replies above, "Processing donation of N⭐...", and the assistant's own
-  fallbacks ("The AI assistant is not configured right now", "I encountered an error").
-  The admin's `/notify` replies are English too.
+  in the chat" replies above and "Processing donation of N⭐...". The admin's `/notify` replies are English too.
 - **Cause:** literals written in the handler or service instead of `app/strings.py`.
 - **Workaround:** none; move them with the add-string skill when touching that code.
 - **Where:** `other_message` in `app/handlers/common.py`, the `donate_` branch of
-  `app/handlers/callbacks.py`, `generate_response` in `app/services/llm.py`,
+  `app/handlers/callbacks.py`,
   `cmd_notify` in `app/handlers/admin.py`.
 
 ### `/notify` has no pacing and no record
@@ -254,16 +243,6 @@ covered by [Voice and other media are refused](#voice-and-other-media-are-refuse
   the number on every QR request.
 - **Workaround:** treat `bot_users.db` as personal data even without the key.
 - **Where:** `LibraryUser` in `app/database/models.py`.
-
-### The assistant's chat history outlives `/unregister`
-
-- **Symptom:** after deleting their data, a user's last messages to the assistant (up to
-  ten) are still used as context until the bot restarts.
-- **Cause:** `chat_history_storage` is a module-level dict that
-  `auth.delete_all_user_data` does not clear. It is never written to disk.
-- **Workaround:** a restart clears it.
-- **Where:** `app/utils/chat_history.py`; `delete_all_user_data` in
-  `app/handlers/auth.py`.
 
 ### A cached ID photo is never refreshed
 

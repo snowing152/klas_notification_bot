@@ -22,7 +22,6 @@ Try the buttons below, or:
 • /show - see what's due
 • /menu, /news - dining and campus news
 
-You can also just ask me anything about the university - no command needed!
 More options live in the menu button in the bottom left of the chat.
 
 If something's not working, message me @bulochkaskefirochkom 💬 I'll sort it out quickly!
@@ -44,6 +43,7 @@ If something's not working, message me @bulochkaskefirochkom 💬 I'll sort it o
             "no_assignments": "🎉 Great news! You have no upcoming assignments",
             "failed_to_fetch_student_info": "We couldn't retrieve your student information right now. Let's try again later!",
             "unexpected_error": "Oops! We encountered a small issue. Please try again in a few moments! 🔄",
+            "menu_only_hint": "I only understand the menu buttons. Please choose an option below.",
             "callback_error": "Please tap the buttons one at a time 😊",
             "donate_title": "Support this project with a coffee! ☕",
             "donate_description": "Your contribution helps keep this bot running and improving. Thank you for your support!",
@@ -98,8 +98,7 @@ All options are buffet-style! Pay once and enjoy as much as you like 🍴
             "language_change_failed": "Please use /register first so I can save your language preference",
             "language_choice": "🌐 Choose your preferred language",
             "school_food_menu_header": "🍴 {day}'s Dining Options 🍴\n\n",
-            "chat_about_university": "Feel free to ask me any questions about the university! I can help with information about campus facilities, academic policies, and more.",
-            "input_field_placeholder": "Ask a question...",
+            "input_field_placeholder": "Choose an option...",
             "button_todos": "📋 Tasks",
             "button_qr": "📱 QR",
             "notification_header": "{emoji} Less than {hours}h remaining!\n\n",
@@ -162,7 +161,6 @@ KLAS 과제를 추적하고 마감일 전에 알려드려요 🧭
 • /show - 마감이 다가오는 일정을 확인하세요
 • /menu, /news - 식당 메뉴와 학교 소식
 
-명령어 없이도 대학 관련 질문을 자유롭게 물어보실 수 있어요!
 더 많은 기능은 화면 왼쪽 하단의 메뉴 버튼에서 확인하세요.
 
 무언가 작동하지 않으면 @bulochkaskefirochkom 에게 연락주세요 💬 빠르게 도와드릴게요!""",
@@ -183,6 +181,7 @@ KLAS 과제를 추적하고 마감일 전에 알려드려요 🧭
             "no_assignments": "🎉 좋은 소식! 예정된 과제가 없습니다",
             "failed_to_fetch_student_info": "지금은 학생 정보를 가져올 수 없습니다. 나중에 다시 시도해 주세요!",
             "unexpected_error": "이런! 작은 문제가 발생했습니다. 잠시 후 다시 시도해 주세요! 🔄",
+            "menu_only_hint": "저는 메뉴 버튼만 이해할 수 있어요. 아래에서 원하는 항목을 선택해 주세요.",
             "callback_error": "버튼을 한 번에 하나씩만 눌러주세요 😊",
             "donate_title": "프로젝트를 커피 한 잔으로 응원해주세요! ☕",
             "donate_description": "여러분의 기부는 이 봇이 계속 운영되고 개선되는 데 도움이 됩니다. 지원해주셔서 감사합니다!",
@@ -206,7 +205,6 @@ KLAS 과제를 추적하고 마감일 전에 알려드려요 🧭
             "time_minutes": "{count}분",
             "time_left": "⏰ 남은 시간: {time_str}",
             "too_many_messages": "메시지를 빠르게 보내고 계시네요! 제가 요청을 처리할 수 있도록 잠시만 기다려주세요.",
-            "chat_about_university": "대학교에 관한 어떤 질문이든 자유롭게 물어보세요! 캠퍼스 시설, 학사 정책 등에 대한 정보를 도와드릴 수 있어요.",
             "student_info": """📚 학생 프로필:
 👨‍🎓 이름: {name} (학번: {uid})
 전공: {major}
@@ -238,7 +236,7 @@ KLAS 과제를 추적하고 마감일 전에 알려드려요 🧭
             "language_change_failed": "언어 설정을 저장하려면 먼저 /register 를 사용해주세요",
             "language_choice": "🌐 원하는 언어를 선택하세요",
             "school_food_menu_header": "🍴 {day} 식사 옵션 🍴\n\n",
-            "input_field_placeholder": "칠문 입력",
+            "input_field_placeholder": "메뉴를 선택하세요",
             "button_todos": "📋 할 일",
             "button_qr": "📱 QR",
             "notification_header": "{emoji} {hours}시간 이내 마감입니다!\n\n",
@@ -301,7 +299,6 @@ KLAS 과제를 추적하고 마감일 전에 알려드려요 🧭
 • /show - что скоро сдавать
 • /menu, /news - меню столовой и новости университета
 
-Можете также просто спросить меня о чём угодно про университет - без команд!
 Больше возможностей - в меню в левом нижнем углу экрана.
 
 Если что-то не работает, напишите мне @bulochkaskefirochkom 💬 Я быстро всё исправлю!
@@ -323,6 +320,7 @@ KLAS 과제를 추적하고 마감일 전에 알려드려요 🧭
             "no_assignments": "🎉 Отличные новости! У вас нет предстоящих заданий",
             "failed_to_fetch_student_info": "Не удалось получить информацию о студенте сейчас. Может, попробуем позже?",
             "unexpected_error": "Ой! Возникла небольшая проблема. Попробуйте еще раз через некоторое время! 🔄",
+            "menu_only_hint": "Я понимаю только кнопки меню. Пожалуйста, выберите нужный пункт ниже.",
             "callback_error": "Пожалуйста, нажимайте кнопки по одной 😊",
             "donate_title": "Поддержите проект чашкой кофе! ☕",
             "donate_description": "Ваше пожертвование помогает поддерживать работу и улучшать этого бота. Спасибо за вашу поддержку!",
@@ -346,7 +344,6 @@ KLAS 과제를 추적하고 마감일 전에 알려드려요 🧭
             "time_minutes": "{count}м",
             "time_left": "⏰ Осталось времени: {time_str}",
             "too_many_messages": "Вы отправляете сообщения слишком быстро! Пожалуйста, дайте мне немного времени обработать ваши запросы.",
-            "chat_about_university": "Не стесняйтесь задавать мне любые вопросы об университете! Я могу помочь с информацией о кампусе, учебных правилах и многом другом.",
             "student_info": """📚 Профиль студента:
 👨‍🎓 Имя: {name} (№: {uid})
 Специальность: {major}
@@ -378,7 +375,7 @@ KLAS 과제를 추적하고 마감일 전에 알려드려요 🧭
             "language_change_failed": "Чтобы сохранить настройки языка, сначала используйте /register",
             "language_choice": "🌐 Выберите предпочитаемый язык",
             "school_food_menu_header": "🍴 Варианты питания на {day} 🍴\n\n",
-            "input_field_placeholder": "Задайте вопрос...",
+            "input_field_placeholder": "Выберите пункт меню...",
             "button_todos": "📋 Дела",
             "button_qr": "📱 QR",
             "notification_header": "{emoji} Осталось менее {hours} ч!\n\n",
