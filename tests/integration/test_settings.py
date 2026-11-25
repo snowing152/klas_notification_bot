@@ -1,6 +1,7 @@
 import pytest
 from unittest.mock import AsyncMock
 from aiogram import types
+from aiogram.exceptions import TelegramBadRequest
 
 from app.database.database import get_user_settings, save_user, update_user_settings
 from app.handlers.settings import (
@@ -87,6 +88,30 @@ async def test_tapping_a_line_switches_it_and_redraws():
 
     await process_settings_callback(make_callback("settings_quiet"))
     assert (await get_user_settings("555")).quiet_hours is True
+
+
+@pytest.mark.asyncio
+async def test_a_double_tap_is_not_an_error():
+    callback = make_callback("settings_quiet")
+    callback.message.edit_text.side_effect = TelegramBadRequest(
+        method=None, message="Bad Request: message is not modified"
+    )
+
+    await process_settings_callback(callback)
+
+    callback.answer.assert_awaited_once_with()
+
+
+@pytest.mark.asyncio
+async def test_any_other_refused_edit_is_reported(caplog):
+    callback = make_callback("settings_quiet")
+    callback.message.edit_text.side_effect = TelegramBadRequest(
+        method=None, message="Bad Request: message to edit not found"
+    )
+
+    await process_settings_callback(callback)
+
+    assert "message to edit not found" in caplog.text
 
 
 @pytest.mark.asyncio

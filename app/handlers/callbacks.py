@@ -52,6 +52,7 @@ async def process_callback_query(callback_query: types.CallbackQuery):
             except Exception as e:
                 logging.error(f"Error processing donation: {e}")
                 await callback_query.message.edit_text(Strings.get("unexpected_error", user_lang))
+                await callback_query.answer()
                 return
 
         if callback_query.data == "filter_food_info":
@@ -144,12 +145,17 @@ async def process_callback_query(callback_query: types.CallbackQuery):
                 await callback_query.message.reply(
                     Strings.get("failed_to_fetch_news", user_lang)
                 )
+
+        # Every branch above ends here, so none leaves the button spinning.
+        await callback_query.answer()
     except TelegramBadRequest as e:
         logging.error(f"Bad request: {e}")
         await callback_query.message.reply(Strings.get("callback_error", user_lang))
+        await callback_query.answer()
     except Exception as e:
         logging.error(f"Error in process_callback_query: {e}")
         await callback_query.message.reply(Strings.get("unexpected_error", user_lang))
+        await callback_query.answer()
 
 
 def register_handlers(dp: Dispatcher):
