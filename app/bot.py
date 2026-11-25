@@ -1,4 +1,4 @@
-from aiogram import Bot, Dispatcher
+from aiogram import Bot, Dispatcher, F
 from aiogram.fsm.storage.memory import MemoryStorage
 
 from app.config import settings
@@ -9,8 +9,24 @@ storage = MemoryStorage()
 bot = Bot(token=settings.BOT_TOKEN)
 dp = Dispatcher(storage=storage)
 
-# Register the anti-spam middleware
-dp.message.middleware(AntiSpamMiddleware(limit=2))
+
+def setup_guards(dp: Dispatcher):
+    """Attach the dispatcher-wide filters and anti-spam middleware."""
+    # The bot holds one person's credentials per chat; in a group the replies,
+    # and the "deleted" credential prompts, would be visible to everyone there.
+    dp.message.filter(F.chat.type == "private")
+    # A callback from a message the bot can no longer read has no chat and is
+    # dropped too, as is any inline-mode callback.
+    dp.callback_query.filter(F.message.chat.type == "private")
+
+    # Messages typed during a registration step are never throttled: see
+    # AntiSpamMiddleware for why.
+    dp.message.middleware(AntiSpamMiddleware(limit=2, skip_in_state=True))
+    # Looser than messages so ordinary tapping through menus still works.
+    dp.callback_query.middleware(AntiSpamMiddleware(limit=0.5))
+
+
+setup_guards(dp)
 
 
 def setup_handlers(dp: Dispatcher):
