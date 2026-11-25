@@ -31,6 +31,14 @@ uses it.
 Each assignment category also needs a `type_<name>` string in all three languages
 ([KLAS.md](KLAS.md#assignment-categories)).
 
+## Strings sent as HTML
+
+`/show` is sent with `parse_mode="HTML"` per call (never a global default: strings such as
+`school_food_info` contain literal `<...>`). The templates it uses (`show_*`,
+`weekday_short_*`, `month_short_*`) therefore must not contain raw `<`, `>` or `&`; values
+from KLAS are escaped in `app/utils/assignment_render.py`. Weekday and month names are one
+key each, so a language can order the day header naturally (`show_day_date`).
+
 ## Resolving the user's language
 
 `get_user_language_with_fallback()`

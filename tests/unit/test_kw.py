@@ -10,7 +10,7 @@ from yarl import URL
 
 from app.services import kw as kw_service
 from app.services.kw import KwangwoonUniversityApi
-from app.handlers.todos import TYPE_EMOJIS as show_emojis
+from app.utils.assignment_render import TYPE_EMOJIS as show_emojis
 from app.services.notifications import TYPE_EMOJIS as notify_emojis
 
 URL_UNDER_TEST = "https://klas.kw.ac.kr/x.do"
