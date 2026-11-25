@@ -18,15 +18,17 @@ class AntiSpamMiddleware(BaseMiddleware):
     Registered as an inner middleware, so it runs after the handler's filters
     matched. Use one instance per event type: each keeps its own clock.
 
-    `skip_in_state` exempts users who have an FSM state set. A throttled
-    message is neither handled nor deleted, so throttling a registration step
-    would leave a quickly pasted password sitting in the chat.
+    `exempt_states` names FSM states in which a plain text message is never
+    throttled. A throttled message is neither handled nor deleted, so
+    throttling a credential step would leave a quickly pasted password sitting
+    in the chat. Commands are not exempt (they re-set the state, and an exempt
+    command could be repeated without limit), and neither is any other state.
     """
 
-    def __init__(self, limit: float = 2, skip_in_state: bool = False):
+    def __init__(self, limit: float = 2, exempt_states: frozenset[str] = frozenset()):
         super().__init__()
         self.limit = limit
-        self.skip_in_state = skip_in_state
+        self.exempt_states = frozenset(exempt_states)
         self.user_last_message_time: dict[int, float] = {}
 
     async def __call__(self, handler, event: Message | CallbackQuery, data: dict):
@@ -38,7 +40,7 @@ class AntiSpamMiddleware(BaseMiddleware):
     async def _is_throttled(self, event, data: dict) -> bool:
         """Record this event and say whether it came too soon. Fails open."""
         try:
-            if self.skip_in_state and data.get("raw_state") is not None:
+            if self._is_credential_step(event, data):
                 return False
 
             user_id = event.from_user.id
@@ -55,6 +57,12 @@ class AntiSpamMiddleware(BaseMiddleware):
         except Exception as e:
             logging.error(f"Error in AntiSpamMiddleware: {type(e).__name__}: {e}")
             return False
+
+    def _is_credential_step(self, event, data: dict) -> bool:
+        if data.get("raw_state") not in self.exempt_states:
+            return False
+        text = getattr(event, "text", None)
+        return isinstance(text, str) and not text.startswith("/")
 
     def _prune(self, now: float) -> None:
         if len(self.user_last_message_time) < _PRUNE_AFTER_ENTRIES:

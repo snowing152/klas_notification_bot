@@ -91,25 +91,64 @@ async def test_second_message_inside_the_limit_is_throttled():
     event.answer.assert_awaited_once()
 
 
-async def test_message_during_a_registration_step_is_never_throttled():
-    mw = AntiSpamMiddleware(limit=60, skip_in_state=True)
+CREDENTIAL = "RegistrationStates:waiting_for_password"
+
+
+async def test_plain_text_at_a_credential_step_is_never_throttled():
+    mw = AntiSpamMiddleware(limit=60, exempt_states=frozenset({CREDENTIAL}))
     handler = AsyncMock()
     event = fake_event()
-    data = {"raw_state": "RegistrationStates:waiting_for_password"}
+    event.text = "hunter2"
+    data = {"raw_state": CREDENTIAL}
     await mw(handler, event, data)
     await mw(handler, event, data)
     assert handler.await_count == 2
     event.answer.assert_not_awaited()
 
 
-async def test_state_is_ignored_when_skip_in_state_is_off():
-    mw = AntiSpamMiddleware(limit=60)
+async def test_commands_are_throttled_even_at_a_credential_step():
+    mw = AntiSpamMiddleware(limit=60, exempt_states=frozenset({CREDENTIAL}))
     handler = AsyncMock()
     event = fake_event()
-    data = {"raw_state": "X:y"}
+    event.text = "/register"
+    data = {"raw_state": CREDENTIAL}
     await mw(handler, event, data)
     await mw(handler, event, data)
     assert handler.await_count == 1
+
+
+async def test_other_states_are_not_exempt():
+    mw = AntiSpamMiddleware(limit=60, exempt_states=frozenset({CREDENTIAL}))
+    handler = AsyncMock()
+    event = fake_event()
+    event.text = "a query"
+    data = {"raw_state": "SearchStates:waiting_for_query"}
+    await mw(handler, event, data)
+    await mw(handler, event, data)
+    assert handler.await_count == 1
+
+
+async def test_non_text_is_not_exempt():
+    mw = AntiSpamMiddleware(limit=60, exempt_states=frozenset({CREDENTIAL}))
+    handler = AsyncMock()
+    event = fake_event()
+    event.text = None
+    data = {"raw_state": CREDENTIAL}
+    await mw(handler, event, data)
+    await mw(handler, event, data)
+    assert handler.await_count == 1
+
+
+def test_the_dispatcher_exempts_exactly_the_registration_states():
+    from app.bot import dp
+
+    mw = next(
+        m for m in dp.message.middleware._middlewares
+        if isinstance(m, AntiSpamMiddleware)
+    )
+    assert "RegistrationStates:waiting_for_password" in mw.exempt_states
+    assert "LibraryRegistrationStates:waiting_for_password" in mw.exempt_states
+    assert all("Registration" in name for name in mw.exempt_states)
 
 
 async def test_failing_handler_runs_once_and_its_error_propagates():
