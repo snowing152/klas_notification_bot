@@ -140,3 +140,15 @@ async def test_announcement_dismissal_leaves_the_feature_off(monkeypatch):
     assert callback.message.edit_text.call_args[0][0] == Strings.get(
         "announcement_dismissed", Language.EN
     )
+
+
+@pytest.mark.asyncio
+async def test_an_unregistered_user_is_asked_to_register_not_shown_an_error():
+    message = make_message(user_id="556")
+
+    await cmd_settings(message)
+
+    text = message.answer.call_args[0][0]
+    assert text == Strings.get("need_to_register", Language.EN)
+    assert message.answer.call_args.kwargs["reply_markup"] is not None
+    assert await get_user_settings("556") is None, "no row for an unregistered user"
