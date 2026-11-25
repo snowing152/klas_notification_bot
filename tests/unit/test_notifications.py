@@ -1141,12 +1141,16 @@ async def test_forget_user_clears_the_in_memory_state():
     notifications._unrecorded["1"] = [("A_homeworks_Report", "new")]
     notifications._holding["1"] = {"threshold=3h"}
     notifications._unrecorded["2"] = [("B_quizzes_Q", "new")]
+    notifications._waiting_for_login.update({"1", "2"})
+    notifications._session_since["1"] = at_hour(3)
 
     notifications.forget_user("1")
 
     assert "1" not in notifications._unrecorded
     assert "1" not in notifications._holding
     assert "2" in notifications._unrecorded
+    assert notifications._waiting_for_login == {"2"}
+    assert "1" not in notifications._session_since
 
 
 async def test_a_user_who_switched_accounts_while_queued_is_skipped(monkeypatch):

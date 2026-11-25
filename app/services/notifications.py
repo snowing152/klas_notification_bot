@@ -362,13 +362,16 @@ async def _record_sent(user_id: str, entries) -> None:
 
 
 def forget_user(user_id: str) -> None:
-    """Drop the in-memory per-user state (unrecorded sends, quiet-hour holds).
+    """Drop the in-memory per-user state (unrecorded sends, quiet-hour holds,
+    login wait, session start).
 
     Called when a user's data is deleted: otherwise owed entries, which carry
     assignment titles, would be written again for them or linger in memory.
     """
     _unrecorded.pop(user_id, None)
     _holding.pop(user_id, None)
+    _waiting_for_login.discard(user_id)
+    _session_since.pop(user_id, None)
 
 
 async def _is_current(user) -> bool:
