@@ -119,6 +119,13 @@ from a "selected subject" kept in the session, even though every body carries
 on one session matched the answers taken one at a time. If a category ever shows up
 under the wrong subject, this is the first thing to check again.
 
+KLAS sends keys with a `null` value as often as it omits them, so the todo parsers
+normalize while reading: a null title becomes `""` (`/show` then shows "Untitled"), a
+null subject name becomes `"Unknown Subject"`, and a row with a null or malformed
+start/deadline is skipped with a `without a usable deadline` warning instead of raising,
+which would fail the TaskGroup and turn the whole list into `None`. Team-project
+deadlines carry an offset (`...+0900`); it is converted to Seoul time, not just dropped.
+
 What the return values mean:
 
 | Call | `None` | Empty |

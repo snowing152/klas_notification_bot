@@ -12,6 +12,7 @@ through html.escape; the localized templates contain no raw `<`, `>` or `&`.
 
 import datetime
 import html
+import logging
 from itertools import groupby
 
 from app.strings import Strings
@@ -364,6 +365,15 @@ def render_assignment_chunks(
             current = candidate
             current_items = current_items + unit_items
     chunks.append((current, current_items))
+    # The `and current_items` guard above lets a unit that does not fit next to
+    # the header stand alone in a chunk. Say so instead of sending a message
+    # Telegram will refuse on every cycle without a trace of why.
+    for text, _ in chunks:
+        if _tg_len(text) > limit:
+            logging.warning(
+                f"Assignment chunk of {_tg_len(text)} units exceeds the "
+                f"{limit} limit"
+            )
     return chunks
 
 
