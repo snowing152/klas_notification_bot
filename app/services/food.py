@@ -1,5 +1,6 @@
 import aiohttp
 import asyncio
+import datetime
 import logging
 
 from bs4 import BeautifulSoup
@@ -79,7 +80,16 @@ async def fetch_weekly_menu() -> bool:
             return True
 
 
-async def get_menu_for_day(day_index: int, user_lang: Language):
+async def get_menu_for_day(
+    day_index: int, user_lang: Language, target_date: datetime.date | None = None
+):
+    """The menu text for weekday `day_index`.
+
+    `target_date` is the calendar date that weekday falls on; the cache is
+    checked against that date's ISO week. Without it "today" is assumed, which
+    is only wrong when the day asked for lies in another week - Sunday's
+    "tomorrow" is next week's Monday.
+    """
     if user_lang == Language.RU:
         days_of_week = [
             "Понедельник",
@@ -111,7 +121,10 @@ async def get_menu_for_day(day_index: int, user_lang: Language):
     # Refetch once per calendar week, not once per request that happens to
     # miss the cache - a day with no published menu would otherwise miss
     # forever and re-scrape on every single call for it.
-    current_week = timezone.now().isocalendar()[:2]
+    # Keyed by the week of the day being asked for, not of today: on Sunday
+    # "tomorrow" is next week's Monday, and index 0 of this week's cache is
+    # the Monday that has already passed.
+    current_week = (target_date or timezone.now()).isocalendar()[:2]
     global _cached_week
     if _cached_week != current_week:
         async with _fetch_lock:
@@ -163,14 +176,15 @@ async def get_today_school_food_menu(user_lang: Language):
     today_index = timezone.now().weekday() % 7
     if today_index > 4:
         return Strings.get("school_closed_on_weekend", user_lang)
-    return await get_menu_for_day(today_index, user_lang)
+    return await get_menu_for_day(today_index, user_lang, timezone.now())
 
 
 async def get_tomorrow_school_food_menu(user_lang: Language):
-    tomorrow_index = (timezone.now().weekday() + 1) % 7
+    tomorrow = timezone.now() + datetime.timedelta(days=1)
+    tomorrow_index = tomorrow.weekday()
     if tomorrow_index > 4:
         return Strings.get("school_closed_on_weekend", user_lang)
-    return await get_menu_for_day(tomorrow_index, user_lang)
+    return await get_menu_for_day(tomorrow_index, user_lang, tomorrow)
 
 
 async def get_school_food_info(user_lang: Language):

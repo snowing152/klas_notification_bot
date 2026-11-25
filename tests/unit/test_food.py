@@ -133,6 +133,42 @@ async def test_get_menu_for_day_fetches_only_once_per_week(monkeypatch):
     assert len(calls) == 1
 
 
+SUNDAY_WEEK_A = datetime(2026, 9, 20, 12, 0)  # ISO week 38, Monday is week 39
+
+HTML_NEXT_WEEK = HTML_WITH_ONE_EMPTY_DAY.replace("Mon breakfast", "Next Monday")
+
+
+@pytest.mark.asyncio
+async def test_sundays_tomorrow_refetches_for_next_weeks_monday(monkeypatch):
+    """Sunday's tomorrow is Monday index 0 of the *next* ISO week; the cache
+    still held the Monday that had already passed."""
+    calls = _stub_fetch(monkeypatch, HTML_WITH_ONE_EMPTY_DAY, HTML_NEXT_WEEK)
+    _freeze_now(monkeypatch, MONDAY_WEEK_A)
+    await food_service.get_menu_for_day(0, food_service.Language.EN)
+    assert len(calls) == 1
+
+    # The menu's day gating returns "closed" on weekends before this point, so
+    # exercise the Sunday clock through the tomorrow entry point.
+    _freeze_now(monkeypatch, SUNDAY_WEEK_A)
+    text = await food_service.get_tomorrow_school_food_menu(food_service.Language.EN)
+
+    assert len(calls) == 2
+    assert "Next Monday" in text
+    assert "Mon breakfast" not in text
+    assert food_service._cached_week == (2026, 39)
+
+
+@pytest.mark.asyncio
+async def test_a_weekday_tomorrow_in_the_same_week_does_not_refetch(monkeypatch):
+    calls = _stub_fetch(monkeypatch, HTML_WITH_ONE_EMPTY_DAY)
+    _freeze_now(monkeypatch, MONDAY_WEEK_A)
+
+    await food_service.get_today_school_food_menu(food_service.Language.EN)
+    await food_service.get_tomorrow_school_food_menu(food_service.Language.EN)
+
+    assert len(calls) == 1
+
+
 @pytest.mark.asyncio
 async def test_get_menu_for_day_refetches_when_the_week_changes(monkeypatch):
     calls = _stub_fetch(monkeypatch, HTML_WITH_ONE_EMPTY_DAY, HTML_WITH_ONE_EMPTY_DAY)
