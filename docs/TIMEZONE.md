@@ -40,10 +40,15 @@ downstream stores "time left". A countdown is only true at the instant it is com
 and this list takes seconds to build on a slow day and is then cached for five
 minutes, so a stored one drifts twice over: lines of one `/show` would be measured from
 different instants, and a cached list would keep claiming minutes already gone.
-`todos._render_chunks` and `notifications._collect_messages` each take a single
+`assignment_render.render_assignments` (called from `todos`) and the notification cycle (`_process_user` passes one
+`timezone.now()` to `_collect_messages` and on to the renderer) each take a single
 `timezone.now()` and subtract it at render. Dropping what is already past belongs to the
 same moment — `todos._pending`, not `_flatten_and_sort`, which may only sort, since the
 order by deadline holds however late the cache is read.
 
 Where KLAS gives only a date, as it does for a discussion's window, the deadline is that
 day's 23:59 ([KLAS.md](KLAS.md#assignment-categories)).
+
+In `/show` and the "New in KLAS" alert, an item shows its exact time left when its
+deadline falls today or tomorrow by the Seoul calendar, not when it is under 24 hours
+away: everything under one "Tomorrow" header then looks the same.

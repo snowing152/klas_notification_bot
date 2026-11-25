@@ -1,5 +1,6 @@
 import json
 import logging
+import os
 import subprocess
 import sys
 
@@ -147,15 +148,20 @@ def test_a_broken_config_is_logged_and_not_just_printed(tmp_path):
         "asyncio.run = lambda coro: coro.close()\n"
         "runpy.run_path('main.py', run_name='__main__')\n"
     )
+    env = {
+        "PATH": "",
+        "RAILWAY_ENVIRONMENT": "production",
+        "BOT_TOKEN": "",
+        "ADMIN_ID": "1",
+        "DATA_DIR": str(tmp_path),
+    }
+    # Windows cannot initialise sockets without SYSTEMROOT, so `import asyncio`
+    # would fail before main.py ever ran. It carries no bot configuration.
+    if "SYSTEMROOT" in os.environ:
+        env["SYSTEMROOT"] = os.environ["SYSTEMROOT"]
     result = subprocess.run(
         [sys.executable, "-c", run_main],
-        env={
-            "PATH": "",
-            "RAILWAY_ENVIRONMENT": "production",
-            "BOT_TOKEN": "",
-            "ADMIN_ID": "1",
-            "DATA_DIR": str(tmp_path),
-        },
+        env=env,
         capture_output=True,
         text=True,
         timeout=60,

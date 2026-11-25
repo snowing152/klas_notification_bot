@@ -36,13 +36,13 @@ One cycle, per user (`_process_user`):
    category KLAS refused ([KLAS.md](KLAS.md#the-client)): the cycle goes on with what was
    read, except for a user not seeded yet, who is left for the next cycle as a failed
    one — seeding from part of the picture would announce the rest as new.
-4. `_collect_messages` builds what is due against a single `timezone.now()`
-   ([TIMEZONE.md](TIMEZONE.md)): one "new" body per assignment not yet announced, and for
+4. `_collect_messages` picks what is due against a single `timezone.now()`
+   ([TIMEZONE.md](TIMEZONE.md)): one "new" item per assignment not yet announced, and for
    each assignment **only the tightest threshold its deadline still fits in**. At 2h30m
    left that is the 3h alert; the 6/12/24h ones are past, not pending. Assignments
    already past their deadline are skipped even though KLAS still lists them.
-5. Send, one message per kind — new assignments first, then one per threshold — with
-   `SEND_DELAY_SECONDS = 1` between them.
+5. Render and send, one message per kind (more when it does not fit, see below) — new
+   assignments first, then one per threshold — with `SEND_DELAY_SECONDS = 1` between them.
 6. Prune `sent_notifications` rows for assignments KLAS no longer lists — unless the
    read was incomplete, when a missing assignment may only be one KLAS did not answer
    about. The log then has `Kept the notification history of <user id> as it is`.
@@ -54,13 +54,45 @@ receives at one moment ([KLAS.md](KLAS.md#the-client)); a `/show` during a cycle
 those slots and is slower for it.
 `_process_user` handles its own errors, so one broken account never aborts a cycle.
 
-Each cycle ends with one summary line — `Notification cycle finished: all N users
-checked, X notifications sent` at INFO, or the same with a failed count at WARNING. Each
+Each cycle ends with one summary line, built by `cycle_summary`: `Notification cycle
+finished: R read, W waiting for login, F failed, X notifications sent; oldest KLAS session
+H.Hh` — INFO, or WARNING when F is not zero. "Read" means KLAS was actually read for that
+user; "waiting for login" are users who have to approve a login or re-register, kept
+apart so they do not pass for served. The session age is the oldest live session among
+this cycle's users, a lower bound on how long KLAS keeps one, and is left out until a
+session start is known. `User <id> has to act before KLAS can be read` is logged once
+when a user starts waiting (again after a restart), not every cycle. Each
 delivery logs `Notification sent to <user id> (threshold=3h)` or `(new assignments)`:
 the user and the kind, deliberately never the assignment text. Quiet hours log
 `Notification held for <user id> (threshold=6h, quiet hours)` once when a hold begins,
 and `Held notification for <user id> (threshold=6h) dropped unsent: no longer due` if it
 ends without a message.
+
+## Message format and chunking
+
+Items are plain dicts (`type`, `subject`, `title`, `expire_at`, plus `entry`, the
+`(assignment_key, kind)` pair to record) and are rendered by `app/utils/assignment_render.py`
+as Telegram HTML, sent with `parse_mode="HTML"` per message. KLAS values are escaped there.
+
+- **New in KLAS** - the `/show` layout (day, subject, items) under the bold
+  `new_assignments_header`, but with every day open: `/show` folds deadlines a week or
+  more away into a collapsed "Later" block, and most work is posted that far ahead, so the
+  alert would hide what it announces (`render_assignment_chunks(..., header_key=...,
+  horizon_days=None)`).
+- **Deadline reminder** - one bold `reminder_header` (urgency emoji from `TIME_THRESHOLDS`,
+  the threshold in hours), then subject, then items, each with the exact time left. No day
+  headers, no footer: everything in it is due within 24 hours (`render_reminder_chunks`).
+
+A message over 4096 UTF-16 units is split - new assignments at day boundaries, reminders at
+subject boundaries, a single day or subject larger than a message at item lines. Each chunk
+repeats the bold title (and the day header, when a day is split) and comes with the items
+it carries. Titles and subject names are capped at `MAX_TEXT_UNITS` (200 UTF-16 units,
+ending in `…`), so one line can never outgrow a message on its own.
+`_deliver` sends the chunks in order and calls `_record_sent` for a chunk's entries right
+after Telegram accepted it; the first refusal stops the rest. What was not sent stays
+unrecorded, so the next cycle selects only those items again: nothing is announced twice,
+and nothing is recorded that was not delivered. Before this, one oversized message was
+refused by Telegram on every cycle, for ever.
 
 ## Thresholds
 
@@ -99,9 +131,23 @@ The schema of these tables, and how to change it for existing users, is in
 
 Rules that follow from this, and that a change here has to keep:
 
-- A row is written (`_record_sent`) only after `_send` returned `True`. If the write
+- A row is written (`_record_sent`) only after `_send` returned `True`, per chunk. If the write
   itself fails, the entries stay in `_unrecorded` and count as sent — the message is
-  already in the chat.
+  already in the chat. The batch is de-duplicated and inserted with `ON CONFLICT DO
+  NOTHING`, so one repeated pair can never make every later write fail.
+- `get_notification_state` and `get_user_settings` return `None` when the database cannot
+  be read and for an unregistered user. `_process_user` then skips the user for the cycle:
+  reading `None` as "not seeded" would re-seed (record new work as announced without
+  sending it), and as "no settings" would ignore the user's switches.
+- The cycle loads its users up front, so `_process_user` re-reads the registration
+  (`_is_current`) at the start, after the KLAS fetch and before seeding: a user who was
+  deleted, or who `/register`ed another student number in the meantime, is skipped
+  (`(True, 0)`, not a failure) instead of being read with the old credentials and having
+  the old account's state written over the new one.
+- `record_sent_notifications` answers `RecordResult.USER_GONE` for an unregistered user;
+  `_record_sent` then drops the entries instead of keeping them in `_unrecorded`.
+- `notifications.forget_user` clears `_unrecorded` and `_holding` for a user; it is called
+  by `auth.delete_all_user_data` and when `/register` switches to another student number.
 - `get_sent_notifications` returns `None`, not `{}`, when the database cannot be read:
   an empty dict would look like "nothing was ever sent".
 - An assignment has no id in KLAS, so its identity is

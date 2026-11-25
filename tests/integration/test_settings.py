@@ -1,6 +1,7 @@
 import pytest
 from unittest.mock import AsyncMock
 from aiogram import types
+from aiogram.exceptions import TelegramBadRequest
 
 from app.database.database import get_user_settings, save_user, update_user_settings
 from app.handlers.settings import (
@@ -10,6 +11,12 @@ from app.handlers.settings import (
 )
 from app.services import announcements
 from app.strings import Language, Strings
+
+
+@pytest.fixture(autouse=True)
+async def registered_user():
+    """Preferences are only kept for a registered user."""
+    await save_user("555", "student", "enc", Language.EN)
 
 
 def make_message(user_id="555", language_code="en"):
@@ -84,6 +91,30 @@ async def test_tapping_a_line_switches_it_and_redraws():
 
 
 @pytest.mark.asyncio
+async def test_a_double_tap_is_not_an_error():
+    callback = make_callback("settings_quiet")
+    callback.message.edit_text.side_effect = TelegramBadRequest(
+        method=None, message="Bad Request: message is not modified"
+    )
+
+    await process_settings_callback(callback)
+
+    callback.answer.assert_awaited_once_with()
+
+
+@pytest.mark.asyncio
+async def test_any_other_refused_edit_is_reported(caplog):
+    callback = make_callback("settings_quiet")
+    callback.message.edit_text.side_effect = TelegramBadRequest(
+        method=None, message="Bad Request: message to edit not found"
+    )
+
+    await process_settings_callback(callback)
+
+    assert "message to edit not found" in caplog.text
+
+
+@pytest.mark.asyncio
 async def test_language_button_opens_the_language_choice():
     callback = make_callback("settings_language")
 
@@ -134,3 +165,28 @@ async def test_announcement_dismissal_leaves_the_feature_off(monkeypatch):
     assert callback.message.edit_text.call_args[0][0] == Strings.get(
         "announcement_dismissed", Language.EN
     )
+
+
+@pytest.mark.asyncio
+async def test_an_unregistered_user_is_asked_to_register_not_shown_an_error():
+    message = make_message(user_id="556")
+
+    await cmd_settings(message)
+
+    text = message.answer.call_args[0][0]
+    assert text == Strings.get("need_to_register", Language.EN)
+    assert message.answer.call_args.kwargs["reply_markup"] is not None
+    assert await get_user_settings("556") is None, "no row for an unregistered user"
+
+
+@pytest.mark.asyncio
+async def test_a_toggle_by_an_unregistered_user_asks_them_to_register():
+    callback = make_callback("settings_quiet", user_id="557")
+
+    await process_settings_callback(callback)
+
+    callback.message.answer.assert_called_once()
+    assert callback.message.answer.call_args[0][0] == Strings.get(
+        "need_to_register", Language.EN
+    )
+    assert await get_user_settings("557") is None

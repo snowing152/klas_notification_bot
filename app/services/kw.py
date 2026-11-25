@@ -666,24 +666,55 @@ class KwangwoonUniversityApi:
             },
         )
 
+    @staticmethod
+    def _text(value) -> str:
+        """A KLAS text field as a string: a missing or null field is "".
+
+        `.get(key, default)` only covers an absent key, and KLAS sends the key
+        with a null value just as often. Nothing else is touched, whitespace
+        included: assignment_key() is built from the title, and trimming a
+        title that KLAS has always sent with a trailing space would give it a
+        new key and repeat its alerts to everyone already notified.
+        """
+        return "" if value is None else str(value)
+
+    def _deadline_or_none(self, kind: str, expire_date, date_format, *args):
+        """The row's deadline, or None - with a warning - when it has none.
+
+        A row whose date is missing or malformed cannot be reminded about. It
+        is skipped on its own: raising here fails the TaskGroup that reads
+        every subject, and the user's whole todo list becomes None.
+        """
+        try:
+            return self._get_expire_at(expire_date, date_format, *args)
+        except (TypeError, ValueError):
+            logging.warning(f"Skipping a {kind} without a usable deadline")
+            return None
+
     def _get_not_done_lectures_info(self, lectures: list[dict]) -> list[dict]:
         not_done_lectures = []
         today_date = timezone.now().strftime("%Y-%m-%d %H:%M")
         for lecture in lectures:
+            start, end = lecture.get("startDate"), lecture.get("endDate")
             if (
                 lecture.get("prog") is not None
                 and lecture.get("prog") < 100
-                and lecture.get("startDate") < today_date
-                and lecture.get("endDate") > today_date
+                and isinstance(start, str)
+                and isinstance(end, str)
+                and start < today_date
+                and end > today_date
             ):
+                expire_at = self._deadline_or_none(
+                    "lecture", end, "%Y-%m-%d %H:%M"
+                )
+                if expire_at is None:
+                    continue
                 not_done_lectures.append(
                     {
-                        "title": lecture.get("sbjt"),
+                        "title": self._text(lecture.get("sbjt")),
                         "progress": lecture.get("prog"),
-                        "expire_date": lecture.get("endDate"),
-                        "expire_at": self._get_expire_at(
-                            lecture.get("endDate"), "%Y-%m-%d %H:%M"
-                        ),
+                        "expire_date": end,
+                        "expire_at": expire_at,
                     }
                 )
         return not_done_lectures
@@ -692,18 +723,24 @@ class KwangwoonUniversityApi:
         not_done_homeworks = []
         today_date = timezone.now().strftime("%Y-%m-%d %H:%M")
         for homework in homeworks:
+            start, end = homework.get("startdate"), homework.get("expiredate")
             if (
                 homework.get("submityn") == "N"
-                and homework.get("startdate") < today_date
-                and homework.get("expiredate") > today_date
+                and isinstance(start, str)
+                and isinstance(end, str)
+                and start < today_date
+                and end > today_date
             ):
+                expire_at = self._deadline_or_none(
+                    "homework", end, "%Y-%m-%d %H:%M:%S"
+                )
+                if expire_at is None:
+                    continue
                 not_done_homeworks.append(
                     {
-                        "title": homework.get("title"),
-                        "expire_date": homework.get("expiredate"),
-                        "expire_at": self._get_expire_at(
-                            homework.get("expiredate"), "%Y-%m-%d %H:%M:%S"
-                        ),
+                        "title": self._text(homework.get("title")),
+                        "expire_date": end,
+                        "expire_at": expire_at,
                     }
                 )
         return not_done_homeworks
@@ -712,20 +749,27 @@ class KwangwoonUniversityApi:
         not_done_team_projects = []
         today_date = timezone.now().strftime("%Y-%m-%dT%H:%M:%S.%f%z")
         for team_project in team_projects:
+            start, end = team_project.get("startdate"), team_project.get("expiredate")
             if (
                 team_project.get("submityn") != "Y"
-                and team_project.get("startdate") < today_date
-                and team_project.get("expiredate") > today_date
+                and isinstance(start, str)
+                and isinstance(end, str)
+                and start < today_date
+                and end > today_date
             ):
+                expire_at = self._deadline_or_none(
+                    "team project",
+                    end,
+                    "%Y-%m-%dT%H:%M:%S.%f%z",
+                    True,
+                )
+                if expire_at is None:
+                    continue
                 not_done_team_projects.append(
                     {
-                        "title": team_project.get("title"),
-                        "expire_date": team_project.get("expiredate"),
-                        "expire_at": self._get_expire_at(
-                            team_project.get("expiredate"),
-                            "%Y-%m-%dT%H:%M:%S.%f%z",
-                            True,
-                        ),
+                        "title": self._text(team_project.get("title")),
+                        "expire_date": end,
+                        "expire_at": expire_at,
                     }
                 )
         return not_done_team_projects
@@ -734,18 +778,24 @@ class KwangwoonUniversityApi:
         not_done_quizzes = []
         today_date = timezone.now().strftime("%Y%m%d%H%M")
         for quiz in quizzes:
+            start, end = quiz.get("sdate"), quiz.get("edate")
             if (
                 quiz.get("issubmit") == "N"
-                and quiz.get("sdate") < today_date
-                and quiz.get("edate") > today_date
+                and isinstance(start, str)
+                and isinstance(end, str)
+                and start < today_date
+                and end > today_date
             ):
+                expire_at = self._deadline_or_none(
+                    "quiz", quiz.get("edt"), "%Y-%m-%d %H:%M"
+                )
+                if expire_at is None:
+                    continue
                 not_done_quizzes.append(
                     {
-                        "title": quiz.get("papernm"),
+                        "title": self._text(quiz.get("papernm")),
                         "expire_date": quiz.get("edt"),
-                        "expire_at": self._get_expire_at(
-                            quiz.get("edt"), "%Y-%m-%d %H:%M"
-                        ),
+                        "expire_at": expire_at,
                     }
                 )
         return not_done_quizzes
@@ -849,7 +899,11 @@ class KwangwoonUniversityApi:
         """
         expire_date_time = datetime.datetime.strptime(expire_date, date_format)
         if remove_timezone:
-            expire_date_time = expire_date_time.replace(tzinfo=None)
+            # Converted, not just stripped: dropping the offset of a
+            # non-+09:00 stamp would shift the deadline by the difference.
+            expire_date_time = expire_date_time.astimezone(
+                timezone.TIMEZONE
+            ).replace(tzinfo=None)
         return expire_date_time
 
     async def _get_subject_todo(
@@ -918,7 +972,12 @@ class KwangwoonUniversityApi:
         todo_list = [
             {
                 "id": subject.get("value"),
-                "name": subject.get("name"),
+                # Only a null name is replaced: an empty one has stored keys.
+                "name": (
+                    "Unknown Subject"
+                    if subject.get("name") is None
+                    else subject.get("name")
+                ),
                 "todo": {},
                 "incomplete": False,
             }

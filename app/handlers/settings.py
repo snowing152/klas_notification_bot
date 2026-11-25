@@ -5,8 +5,12 @@ from aiogram.filters import Command
 from aiogram.exceptions import TelegramBadRequest
 
 from app.strings import Strings
-from app.keyboards import create_settings_keyboard, create_language_keyboard
-from app.database.database import get_user_settings, update_user_settings
+from app.keyboards import (
+    create_language_keyboard,
+    create_login_klas_keyboard,
+    create_settings_keyboard,
+)
+from app.database.database import get_user, get_user_settings, update_user_settings
 from app.services.announcements import ANNOUNCEMENTS
 from app.utils.language_utils import get_user_language_with_fallback
 
@@ -26,7 +30,17 @@ async def cmd_settings(message: types.Message):
         user_lang = await get_user_language_with_fallback(message)
         logging.info(f"User {message.from_user.id} used /settings command")
 
-        settings_row = await get_user_settings(str(message.from_user.id))
+        user_id = str(message.from_user.id)
+        # Preferences are only kept for a registered user, so an unregistered
+        # one gets the way in rather than an error.
+        if await get_user(user_id) is None:
+            await message.answer(
+                Strings.get("need_to_register", user_lang),
+                reply_markup=create_login_klas_keyboard(user_lang),
+            )
+            return
+
+        settings_row = await get_user_settings(user_id)
         if settings_row is None:
             await message.answer(Strings.get("unexpected_error", user_lang))
             return
@@ -58,6 +72,14 @@ async def process_settings_callback(callback_query: types.CallbackQuery):
             await callback_query.answer()
             return
 
+        if await get_user(user_id) is None:
+            await callback_query.message.answer(
+                Strings.get("need_to_register", user_lang),
+                reply_markup=create_login_klas_keyboard(user_lang),
+            )
+            await callback_query.answer()
+            return
+
         settings_row = await get_user_settings(user_id)
         if settings_row is None:
             await callback_query.answer()
@@ -71,10 +93,13 @@ async def process_settings_callback(callback_query: types.CallbackQuery):
                 Strings.get("settings_header", user_lang),
                 reply_markup=create_settings_keyboard(user_lang, settings_row),
             )
-        except TelegramBadRequest:
+        except TelegramBadRequest as e:
             # Telegram rejects an edit that changes nothing; the keyboard did
-            # change here, so this only fires on a double tap.
-            pass
+            # change here, so this only fires on a double tap. Any other
+            # refusal means the user saw no update and goes to the handler's
+            # error path.
+            if "message is not modified" not in str(e):
+                raise
 
         await callback_query.answer()
     except Exception as e:

@@ -90,6 +90,7 @@ def make_callback(data, user_id="700", language_code="en"):
     callback.from_user = from_user
     callback.message = AsyncMock(spec=types.Message)
     callback.message.edit_text = AsyncMock()
+    callback.message.edit_reply_markup = AsyncMock()
     callback.message.answer = AsyncMock()
     callback.answer = AsyncMock()
     return callback
@@ -378,25 +379,6 @@ async def test_discussions_show_up_and_filter_as_assignments():
     assert "Week 3" not in text
 
 
-def test_a_whole_number_of_days_still_prints_its_zero_hours():
-    """"1d 0h 58m" must not collapse into "1d 58m" - read literally, that is a
-    deadline an hour earlier than KLAS actually gives."""
-    left = datetime.timedelta(days=1, minutes=58)
-
-    assert todos._format_time_left(left, Language.EN) == "1d 0h 58m"
-
-
-def test_shorter_spans_drop_the_units_above_them():
-    assert (
-        todos._format_time_left(
-            datetime.timedelta(hours=3, minutes=20), Language.EN
-        )
-        == "3h 20m"
-    )
-    assert todos._format_time_left(datetime.timedelta(minutes=45), Language.EN) == "45m"
-    assert todos._format_time_left(datetime.timedelta(seconds=-30), Language.EN) == "0m"
-
-
 @pytest.mark.asyncio
 async def test_a_cached_list_keeps_counting_down(monkeypatch):
     """The cache holds deadlines, not a countdown frozen at fetch time: a
@@ -407,7 +389,7 @@ async def test_a_cached_list_keeps_counting_down(monkeypatch):
     todo_list = [
         make_subject(
             "컴퓨터그래픽스",
-            [("homeworks", "P02 Primitives and Keyboard", 25)],
+            [("homeworks", "P02 Primitives and Keyboard", 2)],
             now=datetime.datetime(2026, 9, 20, 22, 59),
         )
     ]
@@ -422,8 +404,8 @@ async def test_a_cached_list_keeps_counting_down(monkeypatch):
         await show_all_assignments(second)
 
     assert api.calls["todo"] == 1, "the second /show should come from the cache"
-    assert "1d 0h 58m" in first.answer.call_args[0][0]
-    assert "1d 0h 53m" in second.answer.call_args[0][0]
+    assert "in 1h 58m" in first.answer.call_args[0][0]
+    assert "in 1h 53m" in second.answer.call_args[0][0]
 
 
 @pytest.mark.asyncio
@@ -476,3 +458,188 @@ async def test_filter_tap_with_a_rejected_password_says_to_register_again():
         Strings.get("credentials_expired", Language.EN)
     )
     callback.message.edit_text.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_lists_are_sent_as_html_and_filters_share_one_row():
+    await _register("719")
+    todo_list = [
+        make_subject(
+            "Algorithms", [("lectures", "Week 3", 10), ("homeworks", "a < b", 5)]
+        )
+    ]
+    api = FakeApi(todo_list=todo_list)
+
+    with patch_session(api):
+        message = make_message(user_id="719")
+        await show_all_assignments(message)
+        callback = make_callback("show_lectures", user_id="719")
+        await process_show_filter_callback(callback)
+
+    assert message.answer.call_args.kwargs["parse_mode"] == "HTML"
+    assert "a &lt; b" in message.answer.call_args[0][0]
+    assert callback.message.edit_text.call_args.kwargs["parse_mode"] == "HTML"
+    rows = message.answer.call_args.kwargs["reply_markup"].inline_keyboard
+    assert len(rows) == 1 and len(rows[0]) == 2
+
+
+async def test_a_repeated_filter_tap_is_silent():
+    from aiogram.exceptions import TelegramBadRequest
+
+    await _register("720")
+    api = FakeApi(todo_list=[make_subject("Algorithms", [("lectures", "Week 3", 10)])])
+    with patch_session(api):
+        await show_all_assignments(make_message(user_id="720"))
+        callback = make_callback("show_all", user_id="720")
+        callback.message.edit_text.side_effect = TelegramBadRequest(
+            method=None, message="Bad Request: message is not modified"
+        )
+        await process_show_filter_callback(callback)
+
+    callback.answer.assert_awaited_once_with()
+
+
+async def test_a_filter_tap_that_telegram_refuses_is_reported_not_swallowed(caplog):
+    from aiogram.exceptions import TelegramBadRequest
+
+    await _register("721")
+    api = FakeApi(todo_list=[make_subject("Algorithms", [("lectures", "Week 3", 10)])])
+    with patch_session(api):
+        await show_all_assignments(make_message(user_id="721"))
+        callback = make_callback("show_all", user_id="721")
+        callback.message.edit_text.side_effect = TelegramBadRequest(
+            method=None, message="Bad Request: can't parse entities"
+        )
+        await process_show_filter_callback(callback)
+
+    callback.answer.assert_awaited_once_with(
+        Strings.get("unexpected_error", Language.EN)
+    )
+    assert "can't parse entities" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_a_deleted_user_is_not_served_from_a_cache_written_after_deletion():
+    """A fetch that was in flight when the data was deleted writes its entry
+    after forget_cached_items ran; the cache must not answer for them."""
+    from app.database.database import delete_user
+
+    await _register("710")
+    todos._items_cache["710"] = (
+        todos.time.monotonic(),
+        [
+            {
+                "type": "homeworks",
+                "subject": "A",
+                "title": "Secret",
+                "expire_at": timezone.now() + datetime.timedelta(days=1),
+            }
+        ],
+    )
+
+    await delete_user("710")
+
+    assert await todos._load_items("710") == ("no_user", None)
+    assert "710" not in todos._items_cache
+
+
+@pytest.mark.asyncio
+async def test_nothing_is_cached_when_the_user_was_deleted_during_the_fetch():
+    """KLAS takes seconds; an entry written after the deletion would be a
+    deleted user's assignment list sitting in memory."""
+    from app.database.database import delete_user
+
+    await _register("711")
+
+    class DeletingApi(FakeApi):
+        async def get_todo_list(self):
+            await delete_user("711")
+            return self._todo_list
+
+    api = DeletingApi(todo_list=[make_subject("Algorithms", [("homeworks", "Secret", 5)])])
+
+    with patch_session(api):
+        await todos._load_items("711")
+
+    assert "711" not in todos._items_cache
+
+
+async def test_a_multi_message_filter_result_is_sent_fresh_in_order(monkeypatch):
+    """The keyboard sits on the last message of the old list. Editing it into
+    chunk 1 and sending chunks 2.. after it scrambled the chat."""
+    monkeypatch.setattr(
+        todos, "render_assignments", lambda *a, **k: ["part 1", "part 2", "part 3"]
+    )
+    await _register("730")
+    # Lectures and assignments both present, so the filter keyboard exists.
+    api = FakeApi(
+        todo_list=[
+            make_subject("Algorithms", [("lectures", "Week 3", 10), ("homeworks", "R", 5)])
+        ]
+    )
+    with patch_session(api):
+        callback = make_callback("show_all", user_id="730")
+        await process_show_filter_callback(callback)
+
+    callback.message.edit_text.assert_not_called()
+    callback.message.edit_reply_markup.assert_awaited_once_with(reply_markup=None)
+    sent = callback.message.answer.await_args_list
+    assert [call.args[0] for call in sent] == ["part 1", "part 2", "part 3"]
+    assert [call.kwargs["reply_markup"] is not None for call in sent] == [
+        False,
+        False,
+        True,
+    ]
+    callback.answer.assert_awaited_once_with()
+
+
+async def test_a_single_message_filter_result_edits_the_tapped_message(monkeypatch):
+    await _register("731")
+    api = FakeApi(
+        todo_list=[
+            make_subject("Algorithms", [("lectures", "Week 3", 10), ("homeworks", "R", 5)])
+        ]
+    )
+    with patch_session(api):
+        callback = make_callback("show_lectures", user_id="731")
+        await process_show_filter_callback(callback)
+
+    callback.message.edit_text.assert_awaited_once()
+    callback.message.edit_reply_markup.assert_not_called()
+    callback.message.answer.assert_not_called()
+
+
+async def test_a_refused_keyboard_removal_is_reported_not_swallowed(monkeypatch, caplog):
+    from aiogram.exceptions import TelegramBadRequest
+
+    monkeypatch.setattr(todos, "render_assignments", lambda *a, **k: ["a", "b"])
+    await _register("732")
+    api = FakeApi(todo_list=[make_subject("Algorithms", [("lectures", "Week 3", 10)])])
+    with patch_session(api):
+        callback = make_callback("show_all", user_id="732")
+        callback.message.edit_reply_markup.side_effect = TelegramBadRequest(
+            method=None, message="Bad Request: message can't be edited"
+        )
+        await process_show_filter_callback(callback)
+
+    callback.message.answer.assert_not_called()
+    callback.answer.assert_awaited_once_with(
+        Strings.get("unexpected_error", Language.EN)
+    )
+
+
+async def test_an_item_with_a_null_title_is_listed_as_untitled():
+    await _register("733")
+    todo_list = [make_subject("Algorithms", [("lectures", None, 10)])]
+    todo_list.append({"name": None, "todo": {"homeworks": [
+        {"title": None, "expire_at": timezone.now() + datetime.timedelta(hours=3)}
+    ]}})
+    api = FakeApi(todo_list=todo_list)
+    message = make_message(user_id="733")
+
+    with patch_session(api):
+        await show_all_assignments(message)
+
+    text = message.answer.call_args.args[0]
+    assert "Untitled" in text
+    assert "Unknown Subject" in text

@@ -1,5 +1,8 @@
 import logging
-from aiohttp import ClientSession
+from contextlib import asynccontextmanager
+from typing import Optional
+
+from aiohttp import ClientSession, ClientTimeout
 import xml.etree.ElementTree as ET
 from base64 import encodebytes, b64encode
 
@@ -9,8 +12,7 @@ from Crypto.Cipher import AES
 
 BASE_URL = "https://mobileid.kw.ac.kr"
 
-# Add a session variable at module level
-_session = None
+REQUEST_TIMEOUT_SECONDS = 30
 
 
 class LibraryLoginError(Exception):
@@ -37,19 +39,23 @@ class LibraryLoginRejected(LibraryLoginError):
         super().__init__(f"Library login rejected (result_code={result_code})")
 
 
-async def get_session():
-    global _session
-    if _session is None or _session.closed:
-        _session = ClientSession()
-    return _session
+def new_session() -> ClientSession:
+    """A fresh session for one user's library calls.
+
+    Never shared between users: a shared cookie jar would mix the cookies the
+    library service sets for one student into another student's requests.
+    """
+    return ClientSession(timeout=ClientTimeout(total=REQUEST_TIMEOUT_SECONDS))
 
 
-async def close_session():
-    """Close the shared session; called on shutdown to avoid a dangling session."""
-    global _session
-    if _session is not None and not _session.closed:
-        await _session.close()
-    _session = None
+@asynccontextmanager
+async def _session_scope(session: Optional[ClientSession]):
+    """Use the caller's session, or open (and close) one just for this call."""
+    if session is not None:
+        yield session
+        return
+    async with new_session() as own:
+        yield own
 
 
 def encode(msg: str):
@@ -70,20 +76,26 @@ def encrypt(msg, secret):
     return encodebytes(cipher.encrypt(fill_padding(msg))).decode().strip()
 
 
-async def get_secret_key(real_id: str) -> str:
+async def get_secret_key(real_id: str, session: Optional[ClientSession] = None) -> str:
     url = f"{BASE_URL}/mobile/MA/xml_user_key.php"
     data = {"user_id": encode(real_id)}
 
-    session = await get_session()
-    async with session.post(url, data=data) as response:
-        if response.status != 200:
-            raise Exception(f"Failed to fetch secret key: {response.status}")
+    async with _session_scope(session) as http:
+        async with http.post(url, data=data) as response:
+            if response.status != 200:
+                raise Exception(f"Failed to fetch secret key: {response.status}")
 
-        response_data = await response.text()
-        return parse_xml_response(response_data, "sec_key")
+            response_data = await response.text()
+            return parse_xml_response(response_data, "sec_key")
 
 
-async def library_login(std_number: str, phone: str, password: str, secret: str) -> str:
+async def library_login(
+    std_number: str,
+    phone: str,
+    password: str,
+    secret: str,
+    session: Optional[ClientSession] = None,
+) -> str:
     """Log in to the library service and return the auth key.
 
     Raises `LibraryLoginRejected` when the server understood the request and
@@ -102,73 +114,75 @@ async def library_login(std_number: str, phone: str, password: str, secret: str)
         "pass_wd": encrypted_password,
     }
 
-    session = await get_session()
-    async with session.post(url, data=data) as response:
-        if response.status != 200:
-            logging.warning(f"Library login failed: HTTP {response.status}")
-            raise LibraryLoginError(f"http_status:{response.status}")
+    async with _session_scope(session) as http:
+        async with http.post(url, data=data) as response:
+            if response.status != 200:
+                logging.warning(f"Library login failed: HTTP {response.status}")
+                raise LibraryLoginError(f"http_status:{response.status}")
 
-        # The service replies in UTF-8 (its own XML declaration says so); the
-        # iso-8859-1 this used to hardcode mangled every non-ASCII byte,
-        # turning result_msg's Korean into mojibake.
-        response_data = await response.text(encoding="utf-8")
-        try:
-            auth_key = parse_xml_response(response_data, "auth_key")
-        except ET.ParseError:
-            logging.warning("Library login response was not valid XML")
-            raise LibraryLoginError("invalid_xml") from None
+            # The service replies in UTF-8 (its own XML declaration says so); the
+            # iso-8859-1 this used to hardcode mangled every non-ASCII byte,
+            # turning result_msg's Korean into mojibake.
+            response_data = await response.text(encoding="utf-8")
+            try:
+                auth_key = parse_xml_response(response_data, "auth_key")
+            except ET.ParseError:
+                logging.warning("Library login response was not valid XML")
+                raise LibraryLoginError("invalid_xml") from None
 
-        if not auth_key:
-            # Log only the code - the full body carries the student's id and
-            # phone number back in plain text.
-            result_code = parse_xml_response(response_data, "result_code")
-            result_msg = parse_xml_response(response_data, "result_msg")
-            logging.warning(
-                f"Library login rejected (result_code={result_code})"
-            )
-            raise LibraryLoginRejected(result_code, result_msg)
+            if not auth_key:
+                # Log only the code - the full body carries the student's id and
+                # phone number back in plain text.
+                result_code = parse_xml_response(response_data, "result_code")
+                result_msg = parse_xml_response(response_data, "result_msg")
+                logging.warning(
+                    f"Library login rejected (result_code={result_code})"
+                )
+                raise LibraryLoginRejected(result_code, result_msg)
 
-        return auth_key
+            return auth_key
 
 
-async def get_qr_code(real_id: str, auth_key: str) -> dict:
+async def get_qr_code(
+    real_id: str, auth_key: str, session: Optional[ClientSession] = None
+) -> dict:
     url = f"{BASE_URL}/mobile/MA/xml_userInfo_auth.php"
     data = {"real_id": encode(real_id), "auth_key": auth_key, "new_check": "Y"}
 
-    session = await get_session()
-    async with session.post(url, data=data) as response:
-        if response.status != 200:
-            raise Exception(f"Failed to get QR code: {response.status}")
+    async with _session_scope(session) as http:
+        async with http.post(url, data=data) as response:
+            if response.status != 200:
+                raise Exception(f"Failed to get QR code: {response.status}")
 
-        response_data = await response.text(encoding="utf-8")
-        try:
-            root = ET.fromstring(response_data)
-            return {
-                "qr_code": (
-                    root.find(".//qr_code").text
-                    if root.find(".//qr_code") is not None
-                    else None
-                ),
-                # "user_name": (
-                #     root.find(".//user_name").text
-                #     if root.find(".//user_name") is not None
-                #     else None
-                # ),
-                # "user_code": (
-                #     root.find(".//user_code").text
-                #     if root.find(".//user_code") is not None
-                #     else None
-                # ),
-                # "user_deptName": (
-                #     root.find(".//user_deptName").text
-                #     if root.find(".//user_deptName") is not None
-                #     else None
-                # ),
-            }
-        except ET.ParseError as e:
-            # Not logging response_data here either - same body, same PII.
-            logging.error(f"Failed to parse QR XML response: {e!r}")
-            raise Exception(f"Failed to parse XML response: {e}") from e
+            response_data = await response.text(encoding="utf-8")
+            try:
+                root = ET.fromstring(response_data)
+                return {
+                    "qr_code": (
+                        root.find(".//qr_code").text
+                        if root.find(".//qr_code") is not None
+                        else None
+                    ),
+                    # "user_name": (
+                    #     root.find(".//user_name").text
+                    #     if root.find(".//user_name") is not None
+                    #     else None
+                    # ),
+                    # "user_code": (
+                    #     root.find(".//user_code").text
+                    #     if root.find(".//user_code") is not None
+                    #     else None
+                    # ),
+                    # "user_deptName": (
+                    #     root.find(".//user_deptName").text
+                    #     if root.find(".//user_deptName") is not None
+                    #     else None
+                    # ),
+                }
+            except ET.ParseError as e:
+                # Not logging response_data here either - same body, same PII.
+                logging.error(f"Failed to parse QR XML response: {e!r}")
+                raise Exception(f"Failed to parse XML response: {e}") from e
 
 
 def parse_xml_response(xml_string: str, tag: str) -> str:
@@ -206,13 +220,15 @@ async def generate_qr_code(qr_data: str, path: str):
 async def get_qr(std_number: str, phone_number: str, password: str, path: str):
     real_id = "0" + std_number
     try:
-        secret = await get_secret_key(real_id)
-        auth_key = await library_login(std_number, phone_number, password, secret)
-        qr_data = await get_qr_code(real_id, auth_key)
+        # One session per call: see new_session().
+        async with new_session() as session:
+            secret = await get_secret_key(real_id, session=session)
+            auth_key = await library_login(
+                std_number, phone_number, password, secret, session=session
+            )
+            qr_data = await get_qr_code(real_id, auth_key, session=session)
         qr_path = await generate_qr_code(qr_data, path=path)
         return qr_path
     except Exception as e:
         logging.error(f"Error in get_qr: {e}")
         return None
-
-

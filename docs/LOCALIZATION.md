@@ -28,8 +28,19 @@ in all three languages, identical placeholder sets — so a rule changed in one 
 changed in the other. `nonexistent_key` is deliberately EN-only; `test_string_fallback`
 uses it.
 
-Each assignment category also needs a `type_<name>` string in all three languages
-([KLAS.md](KLAS.md#assignment-categories)).
+## Strings sent as HTML
+
+`/show` is sent with `parse_mode="HTML"` per call (never a global default: strings such as
+`school_food_info` contain literal `<...>`). The templates it uses (`show_*`,
+`weekday_short_*`, `month_short_*`) therefore must not contain raw `<`, `>` or `&`; values
+from KLAS are escaped in `app/utils/assignment_render.py`. Weekday and month names are one
+key each, so a language can order the day header naturally (`show_day_date`).
+
+The notifications are HTML too: `reminder_header` (`{emoji}`, `{hours}`) and
+`new_assignments_header` are plain titles with no markup of their own - the renderer wraps
+them in `<b>` - and `_send(..., parse_mode="HTML")` is passed only for those two kinds of
+message. The login prompts go through the same `_send` as plain text, since
+`klas_login_required` and `credentials_expired` may contain a literal `<`.
 
 ## Resolving the user's language
 
@@ -77,7 +88,7 @@ So when a button label changes, the old text is appended as a `legacy` argument 
 call site rather than dropped — `quick_access_labels("button_todos", "📋 Todos")` in
 `app/handlers/todos.py` and `quick_access_labels("button_qr", "🔍 QR")` in
 `app/handlers/library.py` both carry one. A tap whose text matches nothing falls through
-to `common.other_message` and is answered by the LLM.
+to `common.other_message` and is answered with the `menu_only_hint` reply.
 
 ## Text that is not localized
 

@@ -93,9 +93,16 @@ async def process_account_callback(callback_query: types.CallbackQuery, state: F
             )
 
         elif callback_query.data == "account_delete_yes":
-            await delete_all_user_data(user_id)
-            logging.info(f"User {user_id} unregistered via /account")
-            await callback_query.message.edit_text(Strings.get("unregistered", user_lang))
+            # An abandoned registration step must not keep what was typed so far.
+            await state.clear()
+            if await delete_all_user_data(user_id):
+                logging.info(f"User {user_id} unregistered via /account")
+                await callback_query.message.edit_text(Strings.get("unregistered", user_lang))
+            else:
+                logging.error(f"Deleting the data of {user_id} via /account failed")
+                await callback_query.message.edit_text(
+                    Strings.get("delete_data_failed", user_lang)
+                )
 
         elif callback_query.data == "account_delete_no":
             text, keyboard = await render_account_screen(user_id, user_lang)

@@ -1,11 +1,13 @@
 import asyncio
 import datetime
 import logging
+import re
 from contextlib import asynccontextmanager
 
 import pytest
 
 from app.database.database import (
+    RecordResult,
     save_user,
     get_klas_session,
     get_notification_state,
@@ -18,6 +20,7 @@ from app.keyboards import create_klas_relogin_keyboard
 from app.services import notifications
 from app.services.klas_session import KlasAccess, SessionStatus
 from app.strings import Language, Strings
+from app.utils.assignment_render import INDENT
 
 
 class FakeUser:
@@ -40,16 +43,22 @@ class FakeApi:
 class FakeBot:
     """Collects what would have been sent to Telegram."""
 
-    def __init__(self, fail=False):
+    def __init__(self, fail=False, fail_on_call=None):
         self.sent = []
         self.markups = []
+        self.parse_modes = []
         self.fail = fail
+        # 1-based number of the send_message call Telegram refuses, once.
+        self.fail_on_call = fail_on_call
+        self.calls = 0
 
-    async def send_message(self, chat_id, text, reply_markup=None):
-        if self.fail:
+    async def send_message(self, chat_id, text, reply_markup=None, parse_mode=None):
+        self.calls += 1
+        if self.fail or self.calls == self.fail_on_call:
             raise RuntimeError("Telegram said no")
         self.sent.append((chat_id, text))
         self.markups.append(reply_markup)
+        self.parse_modes.append(parse_mode)
 
 
 @pytest.fixture(autouse=True)
@@ -57,6 +66,14 @@ def fresh_cycle_memory():
     """What the notification loop keeps between cycles is module state."""
     notifications._holding.clear()
     notifications._unrecorded.clear()
+    notifications._waiting_for_login.clear()
+    notifications._session_since.clear()
+
+
+@pytest.fixture(autouse=True)
+async def registered_user():
+    """The notification tables only take rows for a registered user."""
+    await save_user("1", "student1", "enc", Language.EN)
 
 
 def at_hour(hour):
@@ -81,6 +98,20 @@ def make_todo(
             },
         }
     ]
+
+
+NBSP = INDENT
+
+
+def reminder_item(title, subject="Algorithms", type_="homeworks", hours=2.5, kind="t3"):
+    """An item as _collect_messages builds it, due `hours` after the test clock."""
+    return {
+        "type": type_,
+        "subject": subject,
+        "title": title,
+        "expire_at": at_hour(12) + datetime.timedelta(hours=hours),
+        "entry": (f"{subject}_{type_}_{title}", kind),
+    }
 
 
 class FakeClock:
@@ -175,6 +206,93 @@ async def test_cycle_sums_notifications_sent_across_users(monkeypatch):
     assert await notifications.run_notification_cycle(users) == (0, 1 + 2 + 3)
 
 
+def test_summary_separates_users_waiting_for_login():
+    """Regression: "all 31 users checked" was logged while 21 of them were
+    waiting for a login and nothing was read for them."""
+    users = [FakeUser(str(i)) for i in range(5)]
+    notifications._waiting_for_login.update({"1", "2"})
+
+    level, line = notifications.cycle_summary(users, failed=1, sent=3)
+
+    assert level == logging.WARNING
+    assert line == (
+        "Notification cycle finished: 2 read, 2 waiting for login, "
+        "1 failed, 3 notifications sent"
+    )
+
+
+def test_summary_is_info_when_nothing_failed():
+    level, _ = notifications.cycle_summary([FakeUser("1")], failed=0, sent=0)
+
+    assert level == logging.INFO
+
+
+def test_summary_ignores_waiting_users_who_left():
+    notifications._waiting_for_login.add("gone")
+
+    _, line = notifications.cycle_summary([FakeUser("1")], failed=0, sent=0)
+
+    assert "1 read, 0 waiting for login" in line
+
+
+def test_summary_reports_the_oldest_session_of_current_users():
+    now = at_hour(12)
+    notifications._session_since.update(
+        {
+            "1": now - datetime.timedelta(hours=5),
+            "2": now - datetime.timedelta(hours=32, minutes=24),
+            "gone": now - datetime.timedelta(hours=100),
+        }
+    )
+
+    _, line = notifications.cycle_summary(
+        [FakeUser("1"), FakeUser("2")], failed=0, sent=0, now=now
+    )
+
+    assert line.endswith("; oldest KLAS session 32.4h")
+
+
+def test_summary_leaves_out_session_age_when_none_is_known():
+    _, line = notifications.cycle_summary([FakeUser("1")], failed=0, sent=0)
+
+    assert "oldest KLAS session" not in line
+
+
+async def test_waiting_for_login_is_logged_once_per_wait(monkeypatch, caplog):
+    """Regression: 456 of 501 log lines in one day were this message, repeated
+    every 30 minutes for the same users."""
+    caplog.set_level(logging.INFO)
+    _patch_user_deps(monkeypatch, None, status=SessionStatus.NEEDS_LOGIN)
+
+    async def no_prompt(*args):
+        return None
+
+    monkeypatch.setattr(notifications, "_ask_for_login", no_prompt)
+
+    for _ in range(3):
+        assert await notifications._process_user(FakeUser("1")) == (True, 0)
+
+    lines = [r.getMessage() for r in caplog.records if "has to act" in r.getMessage()]
+    assert lines == ["User 1 has to act before KLAS can be read"]
+    assert notifications._waiting_for_login == {"1"}
+
+
+async def test_a_read_ends_the_wait_and_records_the_session_start(monkeypatch):
+    started = at_hour(3)
+    notifications._waiting_for_login.add("1")
+    _patch_user_deps(monkeypatch, FakeApi(todo_list=[]))
+
+    @asynccontextmanager
+    async def active_session(user):
+        yield KlasAccess(SessionStatus.ACTIVE, FakeApi(todo_list=[]), started)
+
+    monkeypatch.setattr(notifications, "open_session", active_session)
+
+    assert await notifications._process_user(FakeUser("1")) == (True, 0)
+    assert notifications._waiting_for_login == set()
+    assert notifications._session_since == {"1": started}
+
+
 def _hold_lines(caplog) -> list:
     return [
         record.getMessage()
@@ -254,7 +372,7 @@ async def test_a_sent_reminder_the_database_refused_is_not_sent_again(monkeypatc
     real_record = notifications.record_sent_notifications
 
     async def database_is_locked(user_id, entries):
-        return False
+        return RecordResult.FAILED
 
     monkeypatch.setattr(notifications, "record_sent_notifications", database_is_locked)
     assert await notifications._process_user(FakeUser("1")) == (True, 1)
@@ -496,7 +614,7 @@ async def test_the_first_cycle_does_not_seed_from_a_partial_read(monkeypatch):
 
 async def _registered(user_id="1"):
     """Session rows, the prompt flag among them, exist only for registered users."""
-    await save_user(user_id, "student", b"encrypted", Language.EN)
+    await save_user(user_id, f"student{user_id}", b"encrypted", Language.EN)
 
 
 def _needs_login(monkeypatch, hour=12, bot=None):
@@ -567,15 +685,17 @@ async def test_the_login_prompt_is_not_recorded_when_telegram_refused(monkeypatc
     assert len(working.sent) == 1, "the refused prompt was not retried"
 
 
-async def test_send_notification_returns_false_and_logs_on_failure(monkeypatch, caplog):
+async def test_send_notification_returns_zero_and_logs_on_failure(monkeypatch, caplog):
     async def boom(**kwargs):
         raise RuntimeError("network down")
 
     monkeypatch.setattr(notifications.bot, "send_message", boom)
 
-    result = await notifications.send_notification("body", "42", 1)
+    result = await notifications.send_notification(
+        [reminder_item("Essay")], "42", 1, now=at_hour(12)
+    )
 
-    assert result is False
+    assert result == 0
     assert "Error sending notification to 42" in caplog.text
 
 
@@ -587,8 +707,12 @@ async def test_send_notification_logs_the_send_without_the_assignment_text(
     bot = FakeBot()
     monkeypatch.setattr(notifications, "bot", bot)
 
-    assert await notifications.send_notification("Secret essay title", "42", 3) is True
+    sent = await notifications.send_notification(
+        [reminder_item("Secret essay title")], "42", 3, now=at_hour(12)
+    )
 
+    assert sent == 1
+    assert "Secret essay title" in bot.sent[0][1]
     assert "Notification sent to 42 (threshold=3h)" in caplog.text
     assert "Secret essay title" not in caplog.text
 
@@ -740,21 +864,7 @@ async def test_a_discussion_is_announced_like_any_other_assignment(monkeypatch):
 
     assert len(bot.sent) == 1
     text = bot.sent[0][1]
-    assert "💬 English" in text
-    assert f"{Strings.get('type_discussions', Language.EN)}: 논문을 읽고 토론" in text
-
-
-def test_format_left_time_keeps_a_zero_hour_under_a_day_count():
-    """Same rule as /show: dropping the 0h reads as an hour less than there is."""
-    assert (
-        notifications.format_left_time(datetime.timedelta(days=1, minutes=58))
-        == "1d 0h 58m"
-    )
-    assert (
-        notifications.format_left_time(datetime.timedelta(hours=3, minutes=20))
-        == "3h 20m"
-    )
-    assert notifications.format_left_time(datetime.timedelta(minutes=45)) == "45m"
+    assert f"\nEnglish\n{NBSP}💬 논문을 읽고 토론" in text
 
 
 async def test_a_rejected_password_asks_for_register_once_without_a_button(monkeypatch):
@@ -770,3 +880,357 @@ async def test_a_rejected_password_asks_for_register_once_without_a_button(monke
     ]
     assert bot.markups == [None]
     assert await _prompt_sent()
+
+
+# --- message format, HTML and chunked delivery --------------------------------
+
+
+def utf16_len(text):
+    return len(text.encode("utf-16-le")) // 2
+
+
+def ids_in(text):
+    """The "T<subject>-<n> " markers many_todo puts at the start of each title."""
+    return set(re.findall(r"T\d\d-\d\d ", text))
+
+
+def many_todo(subjects, per_subject, hours_for):
+    """Long distinct titles, so a batch is certain to need several messages."""
+    return [
+        {
+            "name": f"Subject {s:02d}",
+            "todo": {
+                "homeworks": [
+                    {
+                        "title": f"T{s:02d}-{n:02d} " + "x" * 100,
+                        "expire_at": at_hour(12)
+                        + datetime.timedelta(hours=hours_for(s, n)),
+                    }
+                    for n in range(per_subject)
+                ]
+            },
+        }
+        for s in range(subjects)
+    ]
+
+
+async def _recorded_ids(kind):
+    sent = await get_sent_notifications("1")
+    return {key.split("_homeworks_")[1][:7] for key, kinds in sent.items() if kind in kinds}
+
+
+@pytest.mark.parametrize(
+    "lang, header, in_time",
+    [
+        (Language.EN, "<b>⏰ Less than 3h left</b>", "in 3h 20m"),
+        (Language.KO, "<b>⏰ 마감까지 3시간 미만</b>", "3시간 20분 후"),
+        (Language.RU, "<b>⏰ Осталось менее 3 ч</b>", "через 3ч 20м"),
+    ],
+)
+async def test_reminder_is_localized_compact_and_without_a_footer(
+    monkeypatch, lang, header, in_time
+):
+    bot = FakeBot()
+    monkeypatch.setattr(notifications, "bot", bot)
+    items = [
+        reminder_item("Essay", "Algorithms", hours=3 + 1 / 3),
+        reminder_item("Quiz 2", "Algorithms", "quizzes", hours=1),
+        reminder_item("Lab", "Networks", hours=2),
+    ]
+
+    assert await notifications.send_notification(items, "42", 3, lang, at_hour(12)) == 1
+
+    text = bot.sent[0][1]
+    lines = text.split("\n")
+    assert lines[0] == header
+    # Subject is plain, ordered by earliest deadline, items indented under it.
+    assert lines[1:3] == ["Algorithms", f"{NBSP}🧠 Quiz 2 · " + lines[2].split(" · ")[1]]
+    assert "Networks" in lines and "<b>Algorithms</b>" not in text
+    assert in_time in text
+    assert "🚨" not in text, "the footer is gone"
+    assert lines[-1].startswith(NBSP), "the message ends with an item, not a footer"
+    if lang is Language.RU:
+        assert " h" not in text and "3h" not in text
+
+
+async def test_new_assignments_use_day_grouping_and_their_own_header(monkeypatch):
+    await update_notification_state("1", seeded=True)
+    api = FakeApi(todo_list=make_todo(hours=100) + make_todo("Quiz", hours=30, subject="Networks"))
+    bot = _patch_user_deps(monkeypatch, api)
+
+    await notifications._process_user(FakeUser("1"))
+
+    text = bot.sent[0][1]
+    assert text.startswith("<b>🆕 New in KLAS</b>\n\n<b>Tomorrow</b>\nNetworks\n")
+    assert "<b>Thu, 24 Sep · in 4 days</b>\nAlgorithms\n" in text
+    assert "Tasks" not in text, "the /show header leaked into the announcement"
+    assert "Time remaining" not in text
+
+
+async def test_new_assignments_far_out_are_shown_open_not_folded(monkeypatch):
+    # Most work is posted more than a week ahead; folding it into /show's
+    # "Later" block would hide the very thing the alert announces.
+    await update_notification_state("1", seeded=True)
+    api = FakeApi(todo_list=make_todo(title="Project", hours=24 * 12))
+    bot = _patch_user_deps(monkeypatch, api)
+
+    await notifications._process_user(FakeUser("1"))
+
+    text = bot.sent[0][1]
+    assert "<blockquote" not in text
+    assert "Later" not in text
+    assert "\nAlgorithms\n" in text and "Project" in text
+
+
+async def test_titles_are_html_escaped_in_both_kinds_of_message(monkeypatch):
+    await update_notification_state("1", seeded=True)
+    todo = make_todo(title="a < b & <i>c</i>", hours=2.5, subject="R&D <x>")
+    bot = _patch_user_deps(monkeypatch, FakeApi(todo_list=todo))
+
+    await notifications._process_user(FakeUser("1"))
+
+    assert len(bot.sent) == 2, "the announcement and the 3h reminder"
+    for _, text in bot.sent:
+        assert "a &lt; b &amp; &lt;i&gt;c&lt;/i&gt;" in text
+        assert "\nR&amp;D &lt;x&gt;\n" in text
+        assert "<i>" not in text and "<x>" not in text
+
+
+async def test_notifications_are_sent_as_html_but_login_prompts_stay_plain(monkeypatch):
+    await update_notification_state("1", seeded=True)
+    bot = _patch_user_deps(monkeypatch, FakeApi(todo_list=make_todo(hours=2.5)))
+    await notifications._process_user(FakeUser("1"))
+    assert bot.parse_modes == ["HTML", "HTML"]
+
+    await _registered()
+    prompt = _needs_login(monkeypatch)
+    await notifications._process_user(FakeUser("1"))
+    assert prompt.parse_modes == [None], "the login prompt contains a literal '<'"
+
+
+async def test_a_reminder_is_split_and_a_refused_chunk_keeps_only_the_rest_unrecorded(
+    monkeypatch,
+):
+    await _threshold_only_user()
+    api = FakeApi(
+        todo_list=many_todo(12, 8, lambda s, n: 2.01 + (s * 8 + n) / 200)
+    )
+    everything = {f"T{s:02d}-{n:02d} " for s in range(12) for n in range(8)}
+    flaky = FakeBot(fail_on_call=2)
+    _patch_user_deps(monkeypatch, api, bot=flaky)
+
+    assert await notifications._process_user(FakeUser("1")) == (True, 1)
+
+    assert flaky.calls == 2, "sending went on after Telegram refused a chunk"
+    first = ids_in(flaky.sent[0][1])
+    assert first and first < everything
+    assert await _recorded_ids("t3") == first, "recorded something that was not delivered"
+
+    working = _patch_user_deps(monkeypatch, api)
+    _, sent_count = await notifications._process_user(FakeUser("1"))
+
+    assert sent_count == len(working.sent) >= 2
+    retried = set().union(*(ids_in(text) for _, text in working.sent))
+    assert retried == everything - first, "a delivered item was sent again"
+    assert await _recorded_ids("t3") == everything
+    for _, text in flaky.sent + working.sent:
+        assert utf16_len(text) <= 4096
+        assert text.startswith("<b>⏰ Less than 3h left</b>\n")
+
+    assert await notifications._process_user(FakeUser("1")) == (True, 0)
+    assert len(working.sent) == sent_count
+
+
+async def test_new_assignments_are_split_by_day_and_recorded_per_chunk(monkeypatch):
+    await update_notification_state("1", seeded=True)
+    # Two subjects a day for six days; the first message holds the first days.
+    api = FakeApi(todo_list=many_todo(12, 8, lambda s, n: 30 + 24 * (s // 2) + n / 10))
+    everything = {f"T{s:02d}-{n:02d} " for s in range(12) for n in range(8)}
+    flaky = FakeBot(fail_on_call=2)
+    _patch_user_deps(monkeypatch, api, bot=flaky)
+
+    assert await notifications._process_user(FakeUser("1")) == (True, 1)
+
+    assert flaky.calls == 2
+    first = ids_in(flaky.sent[0][1])
+    assert first and first < everything
+    assert await _recorded_ids("new") == first
+    assert flaky.sent[0][1].startswith("<b>🆕 New in KLAS</b>\n\n")
+
+    working = _patch_user_deps(monkeypatch, api)
+    await notifications._process_user(FakeUser("1"))
+
+    assert len(flaky.sent) + len(working.sent) >= 3
+    retried = set().union(*(ids_in(text) for _, text in working.sent))
+    assert retried == everything - first
+    assert await _recorded_ids("new") == everything
+    for _, text in flaky.sent + working.sent:
+        assert utf16_len(text) <= 4096
+    # A day is never cut in half: each header sits in exactly one message.
+    texts = [text for _, text in flaky.sent + working.sent]
+    for day in ("Tomorrow", "Tue, 22 Sep", "Wed, 23 Sep"):
+        assert sum(f"<b>{day}" in text for text in texts) == 1
+
+
+async def test_a_duplicate_pair_does_not_block_later_recording():
+    """Two same-titled assignments owe the same pair. The rejected batch used
+    to stay in _unrecorded and fail every later write with it."""
+    await notifications._record_sent(
+        "1", [("A_homeworks_Report", "new"), ("A_homeworks_Report", "new")]
+    )
+    await notifications._record_sent("1", [("B_quizzes_Q", "new")])
+
+    assert notifications._unrecorded == {}
+    assert await get_sent_notifications("1") == {
+        "A_homeworks_Report": {"new"},
+        "B_quizzes_Q": {"new"},
+    }
+
+
+async def test_a_poisoned_unrecorded_batch_recovers():
+    from app.database.database import record_sent_notifications
+
+    await record_sent_notifications("1", [("A_homeworks_Report", "new")])
+    notifications._unrecorded["1"] = [
+        ("A_homeworks_Report", "new"),
+        ("A_homeworks_Report", "new"),
+    ]
+
+    await notifications._record_sent("1", [("B_quizzes_Q", "t3")])
+
+    assert notifications._unrecorded == {}
+    assert await get_sent_notifications("1") == {
+        "A_homeworks_Report": {"new"},
+        "B_quizzes_Q": {"t3"},
+    }
+
+
+async def test_a_failed_state_read_does_not_reseed_the_user(monkeypatch):
+    """None from the database used to read as "never seeded", which recorded
+    the real new assignments as announced without sending them."""
+    await update_notification_state("1", seeded=True)
+    api = FakeApi(todo_list=make_todo(hours=100))
+    bot = _patch_user_deps(monkeypatch, api)
+
+    async def unreadable(user_id):
+        return None
+
+    monkeypatch.setattr(notifications, "get_notification_state", unreadable)
+
+    assert await notifications._process_user(FakeUser("1")) == (False, 0)
+    assert bot.sent == []
+    assert await get_sent_notifications("1") == {}
+
+
+async def test_failed_settings_read_does_not_fall_back_to_defaults(monkeypatch):
+    """A user who switched alerts off would get them again."""
+    await update_notification_state("1", seeded=True)
+    await update_user_settings("1", deadline_alerts=False, new_assignment_alerts=False)
+    bot = _patch_user_deps(monkeypatch, FakeApi(todo_list=make_todo(hours=20)))
+
+    async def unreadable(user_id):
+        return None
+
+    monkeypatch.setattr(notifications, "get_user_settings", unreadable)
+
+    assert await notifications._process_user(FakeUser("1")) == (False, 0)
+    assert bot.sent == []
+
+
+async def test_forget_user_clears_the_in_memory_state():
+    notifications._unrecorded["1"] = [("A_homeworks_Report", "new")]
+    notifications._holding["1"] = {"threshold=3h"}
+    notifications._unrecorded["2"] = [("B_quizzes_Q", "new")]
+    notifications._waiting_for_login.update({"1", "2"})
+    notifications._session_since["1"] = at_hour(3)
+
+    notifications.forget_user("1")
+
+    assert "1" not in notifications._unrecorded
+    assert "1" not in notifications._holding
+    assert "2" in notifications._unrecorded
+    assert notifications._waiting_for_login == {"2"}
+    assert "1" not in notifications._session_since
+
+
+async def test_a_user_who_switched_accounts_while_queued_is_skipped(monkeypatch):
+    """The cycle holds the user object loaded before the switch; logging in
+    with it would read the old account and seed the new one from it."""
+    from app.database.database import save_user as save
+
+    api = FakeApi(todo_list=make_todo(hours=100))
+    bot = _patch_user_deps(monkeypatch, api)
+    await save("1", "student-other", "enc", Language.EN)  # re-registered
+
+    assert await notifications._process_user(FakeUser("1")) == (True, 0)
+
+    assert bot.sent == []
+    assert not (await get_notification_state("1")).seeded
+
+
+async def test_a_user_who_switched_accounts_during_the_fetch_is_not_seeded(monkeypatch):
+    from app.database.database import save_user as save
+
+    class SwitchingApi(FakeApi):
+        async def get_todo_list(self):
+            await save("1", "student-other", "enc", Language.EN)
+            return self._todo_list
+
+    bot = _patch_user_deps(monkeypatch, SwitchingApi(todo_list=make_todo(hours=100)))
+
+    assert await notifications._process_user(FakeUser("1")) == (True, 0)
+
+    assert not (await get_notification_state("1")).seeded
+    assert await get_sent_notifications("1") == {}
+    assert bot.sent == []
+
+
+async def test_a_user_deleted_before_their_turn_is_not_a_failure(monkeypatch, caplog):
+    from app.database.database import delete_user
+
+    _patch_user_deps(monkeypatch, FakeApi(todo_list=make_todo(hours=100)))
+    await delete_user("1")
+
+    with caplog.at_level(logging.INFO):
+        assert await notifications._process_user(FakeUser("1")) == (True, 0)
+
+    assert "Could not read notification settings" not in caplog.text
+
+
+async def test_a_user_deleted_between_the_check_and_the_reads_is_not_a_failure(
+    monkeypatch, caplog
+):
+    from app.database.database import delete_user
+
+    _patch_user_deps(monkeypatch, FakeApi(todo_list=make_todo(hours=100)))
+    real_current = notifications._is_current
+
+    async def current_then_deleted(user):
+        result = await real_current(user)
+        await delete_user(user.user_id)
+        return result
+
+    monkeypatch.setattr(notifications, "_is_current", current_then_deleted)
+
+    with caplog.at_level(logging.INFO):
+        assert await notifications._process_user(FakeUser("1")) == (True, 0)
+
+    assert "Could not read notification settings" not in caplog.text
+
+
+async def test_a_deleted_user_is_not_requeued_when_the_write_fails(monkeypatch):
+    async def database_is_locked(user_id, entries):
+        return RecordResult.FAILED
+
+    async def user_gone(user_id, entries):
+        return RecordResult.USER_GONE
+
+    monkeypatch.setattr(notifications, "record_sent_notifications", database_is_locked)
+    await notifications._record_sent("1", [("A_homeworks_Report", "new")])
+    assert "1" in notifications._unrecorded
+
+    notifications.forget_user("1")
+    monkeypatch.setattr(notifications, "record_sent_notifications", user_gone)
+    await notifications._record_sent("1", [("A_homeworks_Report", "new")])
+
+    assert notifications._unrecorded == {}

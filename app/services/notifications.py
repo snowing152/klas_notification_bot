@@ -5,10 +5,12 @@ from app.bot import bot
 from app.config import settings
 
 from app.database.database import (
+    RecordResult,
     get_all_users,
     get_klas_session,
     get_notification_state,
     get_sent_notifications,
+    get_user,
     get_user_language,
     get_user_settings,
     prune_sent_notifications,
@@ -19,6 +21,13 @@ from app.keyboards import create_klas_relogin_keyboard
 from app.services.klas_session import SessionStatus, open_session, set_login_prompt_sent
 from app.strings import Strings, Language
 from app.utils import timezone
+# One emoji table for /show and for notifications: its keys are also what
+# decides which assignment categories get notified about at all.
+from app.utils.assignment_render import (
+    TYPE_EMOJIS,
+    render_assignment_chunks,
+    render_reminder_chunks,
+)
 
 
 # Define time thresholds in hours and their corresponding emoji indicators
@@ -29,15 +38,6 @@ TIME_THRESHOLDS = {
     6: "📢",  # Notice
     12: "ℹ️",  # Info
     24: "📅",  # Day notice
-}
-
-# Assignment type emojis
-TYPE_EMOJIS = {
-    "lectures": "📚",
-    "homeworks": "📝",
-    "quizzes": "🧠",
-    "team_projects": "🚧",
-    "discussions": "💬",
 }
 
 # How many users a cycle reads from KLAS at once. Deliberately small: KLAS
@@ -95,70 +95,85 @@ def assignment_key(subject_name: str, assignment_type: str, title: str) -> str:
     return f"{subject_name}_{assignment_type}_{title}"
 
 
-def format_left_time(left_time) -> str:
-    """Human-readable remaining time, e.g. "3d 4h 5m" or "45m"."""
-    total_seconds = int(left_time.total_seconds())
-    days, remainder = divmod(max(total_seconds, 0), 86400)
-    hours, remainder = divmod(remainder, 3600)
-    minutes = remainder // 60
-
-    # Same rule as the /show formatter: a zero unit stays once a bigger one is
-    # shown, so "1d 0h 58m" never collapses into the hour-short "1d 58m".
-    parts = []
-    if days:
-        parts.append(f"{days}d")
-    if days or hours:
-        parts.append(f"{hours}h")
-    parts.append(f"{minutes}m")
-    return " ".join(parts)
-
-
 async def send_notification(
-    message: str, user_id: str, urgency_level: int, user_lang: Language = Language.EN
-) -> bool:
-    """Send one deadline notification. Returns whether it actually went out.
+    items: list[dict],
+    user_id: str,
+    urgency_level: int,
+    user_lang: Language = Language.EN,
+    now=None,
+) -> int:
+    """Send the deadline reminder for one threshold. Returns how many messages
+    Telegram accepted.
 
-    The caller only records the notification as delivered when this says True,
-    so a message Telegram refused is retried on the next cycle instead of being
-    silently marked as sent.
+    A long list is split into several messages. Each one's entries are written
+    down as soon as it is accepted, and the first refusal stops the rest, so
+    what is left stays unrecorded and is retried next cycle - nothing is
+    announced twice, and nothing is marked sent that was not.
     """
     emoji = TIME_THRESHOLDS.get(urgency_level, "📌")
-    prefix = Strings.get(
-        "notification_header", user_lang, emoji=emoji, hours=urgency_level
-    )
-    postfix = Strings.get("notification_footer", user_lang)
-    return await _send(
-        prefix + message + postfix, user_id, f" (threshold={urgency_level}h)"
-    )
+    header = Strings.get("reminder_header", user_lang, emoji=emoji, hours=urgency_level)
+    chunks = render_reminder_chunks(items, header, user_lang, now or timezone.now())
+    return await _deliver(chunks, user_id, f" (threshold={urgency_level}h)")
 
 
 async def send_new_assignments(
-    message: str, user_id: str, user_lang: Language = Language.EN
-) -> bool:
-    """Announce assignments that just appeared in KLAS.
+    items: list[dict], user_id: str, user_lang: Language = Language.EN, now=None
+) -> int:
+    """Announce assignments that just appeared in KLAS; same delivery contract
+    as `send_notification`.
 
     The deadline thresholds only start at 24 hours, so work posted a week in
-    advance stayed invisible until its last day.
+    advance stayed invisible until its last day. For the same reason every day
+    stays open here: /show's collapsed "Later" block would hide exactly the
+    work this alert exists to announce.
     """
-    return await _send(
-        Strings.get("new_assignments_header", user_lang) + message,
-        user_id,
-        " (new assignments)",
+    chunks = render_assignment_chunks(
+        items,
+        user_lang,
+        now or timezone.now(),
+        header_key="new_assignments_header",
+        horizon_days=None,
     )
+    return await _deliver(chunks, user_id, " (new assignments)")
+
+
+async def _deliver(chunks, user_id: str, detail: str) -> int:
+    """Send chunks in order, recording each one's entries right after Telegram
+    accepted it. Stops at the first refusal; returns how many went out."""
+    delivered = 0
+    for text, items in chunks:
+        if delivered:
+            # Same courtesy as between kinds: no burst of messages in one go.
+            await asyncio.sleep(SEND_DELAY_SECONDS)
+        if not await _send(text, user_id, detail, parse_mode="HTML"):
+            break
+        await _record_sent(user_id, [item["entry"] for item in items])
+        delivered += 1
+    return delivered
 
 
 async def _send(
-    text: str, user_id: str, detail: str = "", reply_markup=None
+    text: str,
+    user_id: str,
+    detail: str = "",
+    reply_markup=None,
+    parse_mode: str | None = None,
 ) -> bool:
     """Deliver one message. `detail` names the kind for the log line only.
+
+    `parse_mode` is passed per message and only when given, because other
+    texts (the login prompts) contain literal `<` and go out as plain text.
 
     A week of production logs had 332 cycles and not one line saying a
     notification was ever sent - only the failure path logged anything. What
     goes into the log is deliberately just the user and the kind, never the
     assignment text the message carries.
     """
+    options = {"parse_mode": parse_mode} if parse_mode else {}
     try:
-        await bot.send_message(chat_id=user_id, text=text, reply_markup=reply_markup)
+        await bot.send_message(
+            chat_id=user_id, text=text, reply_markup=reply_markup, **options
+        )
         logging.info(f"Notification sent to {user_id}{detail}")
         return True
     except Exception as e:
@@ -214,30 +229,27 @@ async def _ask_for_login(
         await set_login_prompt_sent(user_id)
 
 
-def _collect_messages(
-    todo_list, sent: dict, user_lang: Language, thresholds=None
-) -> tuple:
-    """Build the messages this user is due, without sending anything yet.
+def _collect_messages(todo_list, sent: dict, now, thresholds=None) -> tuple:
+    """Pick what this user is due, without rendering or sending anything yet.
 
-    Returns (new_assignments_message, new_entries, threshold_messages,
-    threshold_entries, current_keys) where the *_entries lists are the
-    (assignment_key, kind) pairs to record once the matching message is sent.
+    Returns (new_items, threshold_items, current_keys). Items are the dicts the
+    renderer takes (type, subject, title, expire_at) plus "entry", the
+    (assignment_key, kind) pair to record once the message carrying the item
+    was accepted by Telegram.
+
+    `now` is one instant for the whole cycle: reading KLAS takes seconds on a
+    slow day, so deadlines are carried around as absolute times and only
+    turned into a remaining time at render.
     """
     thresholds = sorted(TIME_THRESHOLDS) if thresholds is None else thresholds
-    # One instant for the whole cycle: reading KLAS takes seconds on a slow
-    # day, so deadlines are carried around as absolute times and turned into
-    # a remaining time only here.
-    now = timezone.now()
-    new_message = ""
-    new_entries = []
-    threshold_messages = {threshold: "" for threshold in TIME_THRESHOLDS}
-    threshold_entries = {threshold: [] for threshold in TIME_THRESHOLDS}
+    new_items = []
+    threshold_items = {threshold: [] for threshold in TIME_THRESHOLDS}
     current_keys = set()
 
     for subject in todo_list:
         subject_name = subject.get("name", "Unknown Subject")
 
-        for assignment_type, emoji in TYPE_EMOJIS.items():
+        for assignment_type in TYPE_EMOJIS:
             for assignment in subject["todo"].get(assignment_type, []):
                 title = assignment.get("title", "")
                 key = assignment_key(subject_name, assignment_type, title)
@@ -245,25 +257,21 @@ def _collect_messages(
 
                 already_sent = sent.get(key, set())
                 left_time = assignment["expire_at"] - now
-                type_label = Strings.get(f"type_{assignment_type}", user_lang)
 
                 if left_time.total_seconds() <= 0:
                     # Past its deadline: KLAS still lists it, but there is
                     # nothing left to warn about.
                     continue
 
-                body = (
-                    f"{emoji} {subject_name}\n"
-                    f"{type_label}: {title}\n"
-                    + Strings.get(
-                        "time_left", user_lang, time_str=format_left_time(left_time)
-                    )
-                    + "\n\n"
-                )
+                item = {
+                    "type": assignment_type,
+                    "subject": subject_name,
+                    "title": title,
+                    "expire_at": assignment["expire_at"],
+                }
 
                 if NEW_ASSIGNMENT_KIND not in already_sent:
-                    new_message += body
-                    new_entries.append((key, NEW_ASSIGNMENT_KIND))
+                    new_items.append({**item, "entry": (key, NEW_ASSIGNMENT_KIND)})
 
                 # Only the tightest threshold the deadline still fits in: at
                 # 2h30m left that is the 3h alert, and the 6/12/24h ones are
@@ -274,19 +282,12 @@ def _collect_messages(
                 for threshold in thresholds:
                     if hours_left <= threshold:
                         if f"t{threshold}" not in already_sent:
-                            threshold_messages[threshold] += body
-                            threshold_entries[threshold].append(
-                                (key, f"t{threshold}")
+                            threshold_items[threshold].append(
+                                {**item, "entry": (key, f"t{threshold}")}
                             )
                         break
 
-    return (
-        new_message,
-        new_entries,
-        threshold_messages,
-        threshold_entries,
-        current_keys,
-    )
+    return new_items, threshold_items, current_keys
 
 
 # What quiet hours are keeping back right now, per user, under the labels the
@@ -300,6 +301,17 @@ _holding: dict[str, set[str]] = {}
 # Delivered, but the database refused the row. Kept here and treated as sent,
 # or the same reminder would go out again every cycle until a write succeeds.
 _unrecorded: dict[str, list] = {}
+
+# Users who have to approve a login (or re-register) before KLAS can be read.
+# Same reasoning as _holding: it turns one log line per user per cycle into one
+# when the wait begins, and it is what the cycle summary counts. In memory on
+# purpose; after a restart each waiting user is announced once more.
+_waiting_for_login: set[str] = set()
+
+# When each user's KLAS session in use started, as last seen by a cycle. The
+# oldest one is a lower bound on how long KLAS keeps a session alive, which is
+# not known yet (docs/KNOWN_ISSUES.md).
+_session_since: dict = {}
 
 
 def _log_holds(user_id: str, held: set, attempted: set) -> None:
@@ -333,13 +345,45 @@ async def _record_sent(user_id: str, entries) -> None:
     The message is already in the chat when this runs, so a failed write must
     not be forgotten: the next cycle would find no row and send it again.
     """
-    pending = _unrecorded.pop(user_id, []) + list(entries)
-    if pending and not await record_sent_notifications(user_id, pending):
+    # Order-preserving dedupe: the same pair can be owed twice (two assignments
+    # with one title), and the database ignores repeats anyway.
+    pending = list(dict.fromkeys(_unrecorded.pop(user_id, []) + list(entries)))
+    if not pending:
+        return
+    result = await record_sent_notifications(user_id, pending)
+    # USER_GONE: nothing is owed to someone who deleted their data, and keeping
+    # the entries would put their assignment titles back in memory.
+    if result is RecordResult.FAILED:
         _unrecorded[user_id] = pending
         logging.error(
             f"Could not record {len(pending)} sent notifications for {user_id}; "
             f"kept in memory until the database takes them"
         )
+
+
+def forget_user(user_id: str) -> None:
+    """Drop the in-memory per-user state (unrecorded sends, quiet-hour holds,
+    login wait, session start).
+
+    Called when a user's data is deleted: otherwise owed entries, which carry
+    assignment titles, would be written again for them or linger in memory.
+    """
+    _unrecorded.pop(user_id, None)
+    _holding.pop(user_id, None)
+    _waiting_for_login.discard(user_id)
+    _session_since.pop(user_id, None)
+
+
+async def _is_current(user) -> bool:
+    """Is `user` still the registration they were loaded as?
+
+    The cycle loads every user up front, so by the time one is reached they may
+    have deleted their data or registered another student number. Going on
+    would log in with the old credentials and write the old account's state
+    over the new one.
+    """
+    current = await get_user(user.user_id)
+    return current is not None and current.username == user.username
 
 
 async def _process_user(user) -> tuple[bool, int]:
@@ -354,9 +398,22 @@ async def _process_user(user) -> tuple[bool, int]:
     sent_count = 0
 
     try:
+        if not await _is_current(user):
+            logging.info(f"User {user_id} was deleted or re-registered; skipping")
+            return True, 0
+
         user_lang = await get_user_language(user_id) or Language.EN
         state = await get_notification_state(user_id)
         user_settings = await get_user_settings(user_id)
+        if state is None or user_settings is None:
+            if await get_user(user_id) is None:
+                logging.info(f"User {user_id} was deleted during the cycle; skipping")
+                return True, 0
+            # Unreadable. Carrying on with defaults would re-seed (recording
+            # new work as announced, unsent) and ignore the user's switches,
+            # so skip the cycle.
+            logging.warning(f"Could not read notification settings for {user_id}")
+            return False, 0
 
         # First, whatever an earlier cycle delivered and could not write down.
         await _record_sent(user_id, ())
@@ -385,9 +442,18 @@ async def _process_user(user) -> tuple[bool, int]:
                 # this shipped; where KLAS wants the push, each gets one prompt
                 # on the first daytime cycle. Not a failed check: counting
                 # everyone who has to act would make every summary a warning.
-                logging.info(f"User {user_id} has to act before KLAS can be read")
+                # Logged once when the user starts waiting; the cycle summary
+                # carries the count, so the line does not repeat every cycle.
+                if user_id not in _waiting_for_login:
+                    _waiting_for_login.add(user_id)
+                    logging.info(f"User {user_id} has to act before KLAS can be read")
+                _session_since.pop(user_id, None)
                 await _ask_for_login(user_id, user_lang, user_settings, access.status)
                 return True, 0
+
+            _waiting_for_login.discard(user_id)
+            if access.logged_in_at is not None:
+                _session_since[user_id] = access.logged_in_at
 
             todo_list = await access.api.get_todo_list()
 
@@ -400,6 +466,12 @@ async def _process_user(user) -> tuple[bool, int]:
             if not todo_list:
                 logging.debug(f"No subjects found for user {user_id}")
                 _log_holds(user_id, set(), set())
+                return True, 0
+
+            # Reading KLAS took seconds; the user may have switched accounts
+            # meanwhile, and everything below would be written to the new one.
+            if not await _is_current(user):
+                logging.info(f"User {user_id} was deleted or re-registered; skipping")
                 return True, 0
 
             # A category KLAS refused arrives as an empty one, which is also
@@ -422,13 +494,10 @@ async def _process_user(user) -> tuple[bool, int]:
                 if getattr(user_settings, "deadline_alerts", True)
                 else []
             )
-            (
-                new_message,
-                new_entries,
-                threshold_messages,
-                threshold_entries,
-                current_keys,
-            ) = _collect_messages(todo_list, sent, user_lang, thresholds)
+            now = timezone.now()
+            new_items, threshold_items, current_keys = _collect_messages(
+                todo_list, sent, now, thresholds
+            )
 
             quiet = in_quiet_hours(user_settings)
             wants_new = getattr(user_settings, "new_assignment_alerts", True)
@@ -438,34 +507,39 @@ async def _process_user(user) -> tuple[bool, int]:
             if not seeded:
                 # First cycle for this user: remember what they already have so
                 # the whole semester's backlog is not announced as brand new.
+                if not await _is_current(user):
+                    logging.info(f"User {user_id} was deleted or re-registered; not seeding")
+                    return True, 0
+                new_entries = [item["entry"] for item in new_items]
                 await _record_sent(user_id, new_entries)
                 await update_notification_state(user_id, seeded=True)
                 logging.info(
                     f"Seeded {len(new_entries)} existing assignments for {user_id}"
                 )
-            elif new_message and not wants_new:
+            elif new_items and not wants_new:
                 # Switched off: record it so turning the setting back on does
                 # not announce everything that piled up in the meantime.
-                await _record_sent(user_id, new_entries)
-            elif new_message and quiet:
+                await _record_sent(user_id, [item["entry"] for item in new_items])
+            elif new_items and quiet:
                 # Held until the quiet hours are over; nothing is recorded, so
                 # the next daytime cycle picks it up.
                 held.add("new assignments")
-            elif new_message:
+            elif new_items:
                 attempted.add("new assignments")
-                if await send_new_assignments(new_message, user_id, user_lang):
-                    await _record_sent(user_id, new_entries)
-                    sent_count += 1
+                # Recording happens inside, message by message.
+                sent_count += await send_new_assignments(
+                    new_items, user_id, user_lang, now
+                )
                 await asyncio.sleep(SEND_DELAY_SECONDS)
 
-            for threshold, message in threshold_messages.items():
-                if message and quiet and threshold not in QUIET_HOURS_EXEMPT:
+            for threshold, items in threshold_items.items():
+                if items and quiet and threshold not in QUIET_HOURS_EXEMPT:
                     held.add(f"threshold={threshold}h")
-                elif message:
+                elif items:
                     attempted.add(f"threshold={threshold}h")
-                    if await send_notification(message, user_id, threshold, user_lang):
-                        await _record_sent(user_id, threshold_entries[threshold])
-                        sent_count += 1
+                    sent_count += await send_notification(
+                        items, user_id, threshold, user_lang, now
+                    )
                     await asyncio.sleep(SEND_DELAY_SECONDS)
 
             _log_holds(user_id, held, attempted)
@@ -526,6 +600,33 @@ async def run_notification_cycle(users) -> tuple[int, int]:
     return failed, sent
 
 
+def cycle_summary(users, failed: int, sent: int, now=None) -> tuple[int, str]:
+    """Build the log level and line that close a notification cycle.
+
+    "read" counts users whose assignments were actually read from KLAS; users
+    waiting for a login are listed apart, because counting them as checked
+    hid that most of the bot's users were not being served. The line is a
+    warning only when a check failed.
+    """
+    now = timezone.now() if now is None else now
+    user_ids = {user.user_id for user in users}
+    waiting = len(user_ids & _waiting_for_login)
+    read = len(user_ids) - waiting - failed
+
+    message = (
+        f"Notification cycle finished: {read} read, {waiting} waiting for login, "
+        f"{failed} failed, {sent} notifications sent"
+    )
+    # Only users still in this cycle: someone who left keeps an entry here
+    # until restart, and must not stretch the figure.
+    started = [_session_since[uid] for uid in user_ids if uid in _session_since]
+    if started:
+        hours = (now - min(started)).total_seconds() / 3600
+        message += f"; oldest KLAS session {hours:.1f}h"
+
+    return (logging.WARNING if failed else logging.INFO), message
+
+
 async def check_todos():
     while True:
         try:
@@ -535,16 +636,7 @@ async def check_todos():
             users = await get_all_users()
             failed_users, sent_count = await run_notification_cycle(users)
 
-            if failed_users:
-                logging.warning(
-                    f"Notification cycle finished: {len(users) - failed_users}"
-                    f"/{len(users)} users checked, {failed_users} failed, "
-                    f"{sent_count} notifications sent"
-                )
-            else:
-                logging.info(
-                    f"Notification cycle finished: all {len(users)} users checked, "
-                    f"{sent_count} notifications sent"
-                )
+            level, message = cycle_summary(users, failed_users, sent_count)
+            logging.log(level, message)
         except Exception as e:
             logging.error(f"Error in check_todos: {e}", exc_info=True)

@@ -14,6 +14,7 @@ from app.keyboards import (
     quick_access_labels,
 )
 from app.utils import timezone
+from app.utils.assignment_render import render_assignments
 from app.services.klas_session import SessionStatus, open_session
 from app.utils.language_utils import get_user_language_with_fallback
 
@@ -21,13 +22,6 @@ from app.utils.language_utils import get_user_language_with_fallback
 # isn't a lecture to watch. Kept separate from "lectures" because that's the
 # distinction students actually care about: watch vs. produce and submit.
 ASSIGNMENT_TYPES = {"homeworks", "quizzes", "team_projects", "discussions"}
-TYPE_EMOJIS = {
-    "lectures": "📚",
-    "homeworks": "📝",
-    "quizzes": "🧠",
-    "team_projects": "👥",
-    "discussions": "💬",
-}
 
 # get_todo_list() makes five requests per subject, so a filter
 # tap re-running it would feel like a hang. Cache the flattened,
@@ -54,14 +48,14 @@ def _flatten_and_sort(todo_list: list[dict]) -> list[dict]:
     """
     items = []
     for subject in todo_list:
-        subject_name = subject.get("name", "Unknown Subject")
+        subject_name = subject.get("name") or "Unknown Subject"
         for assignment_type, assignments in subject["todo"].items():
             for assignment in assignments:
                 items.append(
                     {
                         "type": assignment_type,
                         "subject": subject_name,
-                        "title": assignment.get("title", "Untitled"),
+                        "title": assignment.get("title") or "Untitled",
                         "expire_at": assignment["expire_at"],
                     }
                 )
@@ -79,13 +73,17 @@ async def _load_items(user_id: str) -> tuple[str, list[dict] | None]:
 
     status is "no_user", "needs_login", "password_rejected", "unavailable" or "ok".
     """
+    # Before the cache: a deleted user must never be served from memory, even
+    # if a fetch that was in flight when they deleted wrote an entry after it
+    # was forgotten.
+    user = await get_user(user_id)
+    if not user:
+        forget_cached_items(user_id)
+        return "no_user", None
+
     cached = _items_cache.get(user_id)
     if cached and time.monotonic() - cached[0] < CACHE_TTL_SECONDS:
         return "ok", cached[1]
-
-    user = await get_user(user_id)
-    if not user:
-        return "no_user", None
 
     async with open_session(user) as access:
         if access.status is SessionStatus.NEEDS_LOGIN:
@@ -103,7 +101,10 @@ async def _load_items(user_id: str) -> tuple[str, list[dict] | None]:
     # A list missing a category KLAS refused is shown, since it is all there
     # is, but not kept: the next /show should ask again rather than repeat the
     # gap for five minutes.
-    if not any(subject.get("incomplete") for subject in todo_list):
+    # Not for a user who deleted their data while KLAS was being read.
+    if not any(subject.get("incomplete") for subject in todo_list) and (
+        await get_user(user_id)
+    ):
         _items_cache[user_id] = (time.monotonic(), items)
     return "ok", items
 
@@ -114,57 +115,6 @@ def _filter_items(items: list[dict], category: str) -> list[dict]:
     if category == "assignments":
         return [item for item in items if item["type"] in ASSIGNMENT_TYPES]
     return items
-
-
-def _format_time_left(left_time, user_lang) -> str:
-    total_seconds = int(left_time.total_seconds())
-    days, remainder = divmod(max(total_seconds, 0), 86400)
-    hours, remainder = divmod(remainder, 3600)
-    minutes = remainder // 60
-
-    # A zero unit is printed whenever a bigger one already is: dropping it
-    # turns "1d 0h 58m" into "1d 58m", which reads as an hour less than the
-    # deadline actually leaves.
-    parts = []
-    if days:
-        parts.append(Strings.get("time_days", user_lang, count=days))
-    if days or hours:
-        parts.append(Strings.get("time_hours", user_lang, count=hours))
-    parts.append(Strings.get("time_minutes", user_lang, count=minutes))
-    return " ".join(parts)
-
-
-def _render_chunks(items: list[dict], user_lang, now, limit: int = 4096) -> list[str]:
-    """Message chunks that never cut an item in half.
-
-    `now` is passed in rather than read here so that one message measures every
-    line from the same instant.
-    """
-    if not items:
-        return [Strings.get("no_assignments", user_lang)]
-
-    header = Strings.get("show_header", user_lang)
-    blocks = [
-        Strings.get(
-            "show_item",
-            user_lang,
-            emoji=TYPE_EMOJIS.get(item["type"], "📌"),
-            time_str=_format_time_left(item["expire_at"] - now, user_lang),
-            title=item["title"],
-            subject=item["subject"],
-        )
-        for item in items
-    ]
-
-    chunks = []
-    current = header
-    for block in blocks:
-        if len(current) + len(block) > limit and current != header:
-            chunks.append(current)
-            current = header
-        current += block
-    chunks.append(current)
-    return chunks
 
 
 def _filter_keyboard(items: list[dict], category: str, user_lang):
@@ -206,11 +156,15 @@ async def show_all_assignments(message: types.Message):
         now = timezone.now()
         pending = _pending(items, now)
         filtered = _filter_items(pending, "all")
-        chunks = _render_chunks(filtered, user_lang, now)
+        chunks = render_assignments(filtered, user_lang, now)
         keyboard = _filter_keyboard(pending, "all", user_lang)
         for i, chunk in enumerate(chunks):
             is_last = i == len(chunks) - 1
-            await message.answer(chunk, reply_markup=keyboard if is_last else None)
+            await message.answer(
+                chunk,
+                reply_markup=keyboard if is_last else None,
+                parse_mode="HTML",
+            )
 
     except Exception as e:
         logging.error(f"Error in show_all_assignments: {e}")
@@ -250,21 +204,32 @@ async def process_show_filter_callback(callback_query: types.CallbackQuery):
         now = timezone.now()
         pending = _pending(items, now)
         filtered = _filter_items(pending, category)
-        chunks = _render_chunks(filtered, user_lang, now)
+        chunks = render_assignments(filtered, user_lang, now)
         keyboard = _filter_keyboard(pending, category, user_lang)
 
         try:
-            await callback_query.message.edit_text(
-                chunks[0], reply_markup=keyboard if len(chunks) == 1 else None
-            )
-        except TelegramBadRequest:
-            # e.g. "message is not modified" - a harmless double-tap
-            pass
-        for i, extra in enumerate(chunks[1:]):
-            is_last = i == len(chunks) - 2
-            await callback_query.message.answer(
-                extra, reply_markup=keyboard if is_last else None
-            )
+            if len(chunks) == 1:
+                await callback_query.message.edit_text(
+                    chunks[0], reply_markup=keyboard, parse_mode="HTML"
+                )
+            else:
+                # The keyboard sits on the last message of the list, so
+                # putting chunks[0] into it and sending the rest after it
+                # would leave the list out of order. Retire the tapped
+                # message's buttons and send the whole list again, with the
+                # keyboard on its last chunk.
+                await callback_query.message.edit_reply_markup(reply_markup=None)
+                for i, chunk in enumerate(chunks):
+                    await callback_query.message.answer(
+                        chunk,
+                        reply_markup=keyboard if i == len(chunks) - 1 else None,
+                        parse_mode="HTML",
+                    )
+        except TelegramBadRequest as e:
+            # A double-tap on the active filter is harmless; anything else
+            # (e.g. "can't parse entities") means the user saw no update.
+            if "message is not modified" not in str(e):
+                raise
 
         await callback_query.answer()
     except Exception as e:

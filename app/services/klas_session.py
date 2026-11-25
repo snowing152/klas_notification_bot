@@ -47,10 +47,16 @@ class SessionStatus(Enum):
 
 @dataclass(frozen=True)
 class KlasAccess:
-    """What open_session() yields. `api` is set only for SessionStatus.ACTIVE."""
+    """What open_session() yields.
+
+    `api` is set only for SessionStatus.ACTIVE. `logged_in_at` is when the
+    session in use started (None if unknown, e.g. a row older than the
+    column), so callers can tell how long KLAS has kept it alive.
+    """
 
     status: SessionStatus
     api: Optional[KwangwoonUniversityApi] = None
+    logged_in_at: Optional[datetime.datetime] = None
 
 
 @dataclass(frozen=True)
@@ -100,7 +106,7 @@ async def open_session(user) -> AsyncIterator[KlasAccess]:
                 return
 
         try:
-            yield KlasAccess(SessionStatus.ACTIVE, api)
+            yield KlasAccess(SessionStatus.ACTIVE, api, logged_in_at)
         finally:
             await _store_cookies(user_id, logged_in_at, api.klas_cookies())
 

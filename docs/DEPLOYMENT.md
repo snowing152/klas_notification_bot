@@ -26,7 +26,6 @@ with `python-dotenv`; real environment variables win over it.
 |---|---|---|---|
 | `BOT_TOKEN` | yes | — | from @BotFather; import raises without it |
 | `ADMIN_ID` | yes | — | numeric Telegram id allowed to use `/notify`; import raises unless it is an integer |
-| `GEMINI_API_KEY` | no | empty | without it the chat assistant answers that it is not configured; everything else works |
 | `DATA_DIR` | on Railway | working directory | where `bot_users.db` and `encryption_key.key` live; must exist and be writable ([DATABASE.md](DATABASE.md)) |
 | `ENCRYPTION_KEY` | on Railway | empty | Fernet key; when empty, `<DATA_DIR>/encryption_key.key` is used ([SECURITY.md](SECURITY.md)) |
 | `DATABASE_URL` | no | SQLite file in `DATA_DIR` | full SQLAlchemy URL; leave unset |
@@ -49,7 +48,7 @@ empty `KW_TZ` or `DATABASE_URL` is taken literally and stops the bot at startup,
 1. **Attach a volume** and mount it, for example at `/data`. The container filesystem is
    wiped on every deploy; without a volume `bot_users.db` goes with it.
 2. **Set the variables**: `BOT_TOKEN`, `ADMIN_ID`, `DATA_DIR` (the mount path),
-   `ENCRYPTION_KEY`, and `GEMINI_API_KEY` if the assistant is wanted.
+   and `ENCRYPTION_KEY`.
 3. **`ENCRYPTION_KEY` has to be a variable here.** A key file on an ephemeral filesystem
    disappears with the deploy, and the next start then has no key for the passwords
    already in the database. Generate it once, before the first user registers:
@@ -74,8 +73,8 @@ says so. That is intended.
    python -c "from app.utils.encryption import generate_key; generate_key()"
    ```
 
-   This **overwrites** `<DATA_DIR>/encryption_key.key` without asking. Run it on a new
-   installation only.
+   It refuses to overwrite an existing `<DATA_DIR>/encryption_key.key`, but run it on a new
+   installation only: it cannot know about a key held in `ENCRYPTION_KEY`.
 4. Edit `botdaemon.service` — `User`, `Group`, `WorkingDirectory`, `ExecStart` — then:
 
    ```bash
@@ -87,6 +86,28 @@ says so. That is intended.
 The unit restarts the bot ten seconds after a failure. Its restart limit does not apply
 as written — see [KNOWN_ISSUES.md](KNOWN_ISSUES.md). `WorkingDirectory` matters:
 `images/` and, by default, the database and the key are all resolved against it.
+
+## One-time VACUUM after enabling secure_delete
+
+The bot sets `PRAGMA secure_delete=ON` on every connection, so rows deleted from now on
+are overwritten with zeros. Pages freed *before* that change still hold the old bytes
+(deleted users' encrypted passwords, phone numbers) in the free list of `bot_users.db`.
+`VACUUM` rewrites the file without them. Once, after deploying this change:
+
+1. Stop the bot.
+2. Back up `bot_users.db` (plus any `-wal`/`-shm` files next to it).
+3. `sqlite3 bot_users.db "VACUUM;"`, then start the bot.
+
+Do it on a copy first if unsure. Never run it while the bot is running.
+
+## Library TLS
+
+Book search verifies `kupis.kw.ac.kr`. The site sends no intermediate certificate, so
+the bot ships the Sectigo OV R36 intermediate (`app/certs/`), but the root above it,
+"Sectigo Public Server Authentication Root R46", must be in the host's CA bundle. It is
+in every current `ca-certificates` package. After a deploy, run one real book search
+(`/account`, then Find a book) to confirm; an "unable to get local issuer certificate"
+error in the log means the root is missing on that host.
 
 ## Logs
 
@@ -117,14 +138,14 @@ Lines worth knowing:
 
 | Line | Means |
 |---|---|
-| `Notification cycle finished: ...` | one per cycle; INFO when every user was read, WARNING with a failed count otherwise |
+| `Notification cycle finished: ...` | one per cycle: users read, waiting for login, failed, notifications sent, oldest KLAS session age; WARNING when any failed ([NOTIFICATIONS.md](NOTIFICATIONS.md)) |
+| `User <id> has to act before KLAS can be read` | that user started waiting for a login; logged once per wait |
 | `Notification sent to <id> (...)` | a delivery, with its kind |
 | `Notification held for <id> (...)` / `Held notification ... dropped unsent` | quiet hours kept a reminder back / a held one stopped being due before it could go out |
 | `Uncaught exception` (critical) | the process died; at startup this is usually `app/config.py` refusing a variable |
 | `Could not log in as user <id>` | KLAS refused or dropped a login; all users at once points at KLAS |
 | `Failed to retrieve <url>. Status code: ...` / `Non-JSON response from <url>` | an endpoint changed or is down ([KLAS.md](KLAS.md#when-klas-changes)) |
 | `Incomplete assignment data for subject ...` | one category of one subject could not be read |
-| `Error generating response: ...` | the Gemini call failed; a retired model name shows up here |
 | `DATA_DIR points at ..., which does not exist` | inside an `Uncaught exception` entry: no volume mounted; the bot did not start |
 
 Logs carry Telegram user ids and event kinds. They must never carry a password
@@ -136,7 +157,7 @@ Logs carry Telegram user ids and event kinds. They must never carry a password
 |---|---|---|
 | `bot_users.db` | `DATA_DIR` | every user has to register again |
 | The Fernet key | `ENCRYPTION_KEY`, or `encryption_key.key` in `DATA_DIR` | every stored password is undecryptable, permanently |
-| `BOT_TOKEN`, `ADMIN_ID`, `GEMINI_API_KEY` | platform variables or `.env` | the bot does not start, or the assistant is off |
+| `BOT_TOKEN`, `ADMIN_ID` | platform variables or `.env` | the bot does not start |
 
 Cached ID photos (`images/photos/`) are written under the working directory, not
 `DATA_DIR`, and are simply fetched again when missing.

@@ -1,4 +1,7 @@
 import logging
+import unicodedata
+from typing import Optional
+
 from aiogram.filters import Command
 from aiogram import Dispatcher, F, types
 from aiogram.fsm.context import FSMContext
@@ -8,6 +11,7 @@ from app.utils.encryption import decrypt_password, encrypt_password
 from app.services.qr import (
     library_login,
     get_secret_key,
+    new_session,
     LibraryLoginError,
     LibraryLoginRejected,
 )
@@ -25,6 +29,7 @@ from app.database.database import (
 from app.strings import Language, Strings
 from app.keyboards import KLAS_RELOGIN_CALLBACK, create_login_klas_keyboard
 from app.handlers.klas_login import LoginOutcome, run_push_login
+from app.services import login_limiter
 from app.services.klas_session import clear_password_rejected, mark_password_rejected
 from app.utils.language_utils import get_user_language_with_fallback
 from app.handlers.student_info import student_photo_path
@@ -38,9 +43,11 @@ class RegistrationStates(StatesGroup):
 
 
 class LibraryRegistrationStates(StatesGroup):
+    # The password is deliberately the last step: it is used straight from the
+    # message that carries it, so it is never kept in the FSM data.
     waiting_for_username = State()
-    waiting_for_password = State()
     waiting_for_phone_number = State()
+    waiting_for_password = State()
 
 
 async def cmd_register(message: types.Message, state: FSMContext):
@@ -56,11 +63,29 @@ async def cmd_register(message: types.Message, state: FSMContext):
         await state.clear()
 
 
+def normalize_student_number(text: Optional[str]) -> Optional[str]:
+    """The student number in `text`, or None when it is not one.
+
+    NFKC folds full-width digits (common on Korean keyboards) to ASCII; only
+    ASCII digits are accepted, so the same value reaches the limiter and KLAS.
+    """
+    if not text:
+        return None
+    number = unicodedata.normalize("NFKC", text).strip()
+    return number if number.isascii() and number.isdigit() else None
+
+
 async def process_username(message: types.Message, state: FSMContext):
     try:
         user_lang = await get_user_language_with_fallback(message)
 
-        await state.update_data(username=message.text)
+        username = normalize_student_number(message.text)
+        if username is None:
+            # Not a number (or not text at all): stay in this step so they can retry.
+            await message.answer(Strings.get("student_number_digits_only", user_lang))
+            return
+
+        await state.update_data(username=username)
         await state.set_state(RegistrationStates.waiting_for_password)
         await message.answer(Strings.get("enter_password", user_lang))
         await message.delete()
@@ -73,6 +98,11 @@ async def process_username(message: types.Message, state: FSMContext):
 async def process_password(message: types.Message, state: FSMContext):
     """Check the credentials, save them, and log in with the push approval."""
     user_lang = Language.EN
+    if not message.text:
+        # A sticker or photo is no password; stay in this step.
+        user_lang = await get_user_language_with_fallback(message)
+        await message.answer(Strings.get("enter_password", user_lang))
+        return
     try:
         user_lang = await get_user_language_with_fallback(message)
         username = (await state.get_data())["username"]
@@ -94,9 +124,18 @@ async def process_password(message: types.Message, state: FSMContext):
 
     user_id = str(message.from_user.id)
 
+    if not login_limiter.reserve(username):
+        # KLAS locks an account after five wrong passwords; do not let a
+        # stranger's guesses at this number reach that. The slot is taken
+        # before the slow login so concurrent attempts count too.
+        logging.warning(f"Refusing /register for {user_id}: too many failed logins")
+        await message.answer(Strings.get("register_attempts_limited", user_lang))
+        return
+
     async def save_credentials() -> bool:
         existing = await get_user(user_id)
-        if existing is None or existing.username != username:
+        switched = existing is not None and existing.username != username
+        if existing is None or switched:
             # A session kept for another student number must not outlive
             # the switch, whatever happens to the login that follows.
             await delete_klas_session(user_id)
@@ -107,8 +146,20 @@ async def process_password(message: types.Message, state: FSMContext):
         saved = await save_user(user_id, username, encrypt_password(password), user_lang)
         if not saved:
             logging.error(f"Could not save the KLAS credentials of {user_id}")
+        elif switched:
+            # Only once the new account is saved: if the save failed the old
+            # account is still the registered one, and wiping its history
+            # would send it every reminder again. What is cleared belongs to
+            # the old student number: the notification history (it would
+            # count the new account's assignments as already announced), the
+            # /show cache and the ID photo.
+            await delete_notification_data(user_id)
+            forget_notifications(user_id)
+            forget_cached_items(user_id)
+            student_photo_path(user_id).unlink(missing_ok=True)
         return saved
 
+    outcome = None
     try:
         outcome = await run_push_login(
             message.bot,
@@ -129,6 +180,15 @@ async def process_password(message: types.Message, state: FSMContext):
             f"Error in process_password: {type(e).__name__}: {e}", exc_info=True
         )
         await message.answer(Strings.get("registration_failed", user_lang))
+    finally:
+        # Only a password KLAS rejected counts, never a network failure.
+        # KLAS accepted it before it asked for the push in these outcomes.
+        login_limiter.finish(
+            username,
+            rejected=outcome is LoginOutcome.WRONG_CREDENTIALS,
+            accepted=outcome
+            in (LoginOutcome.LOGGED_IN, LoginOutcome.TIMED_OUT, LoginOutcome.NO_DEVICE),
+        )
 
 
 async def process_klas_relogin(callback_query: types.CallbackQuery):
@@ -178,28 +238,54 @@ async def process_klas_relogin(callback_query: types.CallbackQuery):
         await callback_query.message.answer(Strings.get("unexpected_error", user_lang))
 
 
-async def delete_all_user_data(user_id: str) -> None:
+def forget_notifications(user_id: str) -> None:
+    """Drop the notification service's in-memory state for this user."""
+    # Imported on use: the notification service imports `bot` from app.bot,
+    # and app.bot imports this module for the registration states, so a
+    # module-level import here closes an import cycle.
+    from app.services.notifications import forget_user
+
+    forget_user(user_id)
+
+
+async def delete_all_user_data(user_id: str) -> bool:
     """"Delete my data" means all of it: the library row holds a second
     password and the phone number, the cached ID photo is a face, and the
     in-memory assignment cache is read before the database.
-    Shared by /unregister and the /account screen's delete-confirm button."""
-    await delete_user(user_id)
-    await delete_klas_session(user_id)
-    await delete_library_user(user_id)
-    await delete_notification_data(user_id)
-    await delete_user_settings(user_id)
-    student_photo_path(user_id).unlink(missing_ok=True)
+    Shared by /unregister and the /account screen's delete-confirm button.
+
+    Every step runs even when an earlier one failed. Returns False when any
+    of them did, so the caller can tell the user the deletion is incomplete."""
+    results = [
+        await delete_user(user_id),
+        await delete_klas_session(user_id),
+        await delete_library_user(user_id),
+        await delete_notification_data(user_id),
+        await delete_user_settings(user_id),
+    ]
+    try:
+        student_photo_path(user_id).unlink(missing_ok=True)
+    except OSError as e:
+        logging.error(f"Could not delete the ID photo of {user_id}: {e}")
+        results.append(False)
     forget_cached_items(user_id)
+    forget_notifications(user_id)
+    return all(results)
 
 
-async def cmd_unregister(message: types.Message):
+async def cmd_unregister(message: types.Message, state: FSMContext):
     try:
         user_lang = await get_user_language_with_fallback(message)
 
         user_id = str(message.from_user.id)
-        await delete_all_user_data(user_id)
-        await message.answer(Strings.get("unregistered", user_lang))
-        logging.info(f"User {message.from_user.id} unregistered")
+        # An abandoned registration step must not keep what was typed so far.
+        await state.clear()
+        if await delete_all_user_data(user_id):
+            await message.answer(Strings.get("unregistered", user_lang))
+            logging.info(f"User {message.from_user.id} unregistered")
+        else:
+            logging.error(f"Deleting the data of {user_id} failed")
+            await message.answer(Strings.get("delete_data_failed", user_lang))
         await message.delete()
     except Exception as e:
         logging.error(f"Error in cmd_unregister: {e}")
@@ -222,25 +308,17 @@ async def process_library_username(message: types.Message, state: FSMContext):
     try:
         user_lang = await get_user_language_with_fallback(message)
 
-        await state.update_data(username=message.text)
-        await state.set_state(LibraryRegistrationStates.waiting_for_password)
-        await message.answer(Strings.get("library_enter_password", user_lang))
-        await message.delete()
-    except Exception as e:
-        logging.error(f"Error in process_library_username: {e}")
-        await message.answer(Strings.get("unexpected_error", user_lang))
+        text = message.text and unicodedata.normalize("NFKC", message.text).strip()
+        if not text:
+            await message.answer(Strings.get("library_enter_username", user_lang))
+            return
 
-
-async def process_library_password(message: types.Message, state: FSMContext):
-    try:
-        user_lang = await get_user_language_with_fallback(message)
-
-        await state.update_data(password=message.text)
+        await state.update_data(username=text)
         await state.set_state(LibraryRegistrationStates.waiting_for_phone_number)
         await message.answer(Strings.get("enter_phone_number", user_lang))
         await message.delete()
     except Exception as e:
-        logging.error(f"Error in process_library_password: {e}")
+        logging.error(f"Error in process_library_username: {e}")
         await message.answer(Strings.get("unexpected_error", user_lang))
 
 
@@ -248,16 +326,63 @@ async def process_library_phone_number(message: types.Message, state: FSMContext
     try:
         user_lang = await get_user_language_with_fallback(message)
 
+        phone_number = message.text and message.text.strip()
+        if not phone_number:
+            await message.answer(Strings.get("enter_phone_number", user_lang))
+            return
+
+        await state.update_data(phone_number=phone_number)
+        await state.set_state(LibraryRegistrationStates.waiting_for_password)
+        await message.answer(Strings.get("library_enter_password", user_lang))
+        await message.delete()
+    except Exception as e:
+        logging.error(f"Error in process_library_phone_number: {e}")
+        await message.answer(Strings.get("unexpected_error", user_lang))
+
+
+async def process_library_password(message: types.Message, state: FSMContext):
+    """Last step: log in with the password straight from this message.
+
+    The password never enters the FSM data, so an abandoned or crashed flow
+    cannot leave it in storage."""
+    user_lang = Language.EN
+    if not message.text:
+        # A sticker or photo is no password; stay in this step.
+        user_lang = await get_user_language_with_fallback(message)
+        await message.answer(Strings.get("library_enter_password", user_lang))
+        return
+    try:
+        user_lang = await get_user_language_with_fallback(message)
         user_data = await state.get_data()
         username = user_data["username"]
-        password = user_data["password"]
-        phone_number = message.text
+        phone_number = user_data["phone_number"]
+        password = message.text
+    except Exception as e:
+        logging.error(f"Error in process_library_password: {type(e).__name__}: {e}")
+        await message.answer(Strings.get("unexpected_error", user_lang))
+        return
+    finally:
+        # Before any network call: the two library requests can take a minute
+        # each, and the password must not sit in the chat meanwhile. The state
+        # goes first: a user left in it would have their next message taken
+        # for a password.
+        await state.clear()
+        try:
+            await message.delete()
+        except Exception as e:
+            logging.error(f"Could not delete a password message: {type(e).__name__}: {e}")
+
+    try:
         user_id = str(message.from_user.id)
 
         encrypted_password = encrypt_password(password)
-        secret = await get_secret_key("0" + username)
         try:
-            auth_key = await library_login(username, phone_number, password, secret)
+            # One session for both calls, as before, but private to this user.
+            async with new_session() as session:
+                secret = await get_secret_key("0" + username, session=session)
+                auth_key = await library_login(
+                    username, phone_number, password, secret, session=session
+                )
         except LibraryLoginRejected as e:
             # result_code=1 is KLAS's "this isn't the phone number registered
             # to this library account" - common enough (registered phone
@@ -282,11 +407,8 @@ async def process_library_phone_number(message: types.Message, state: FSMContext
         else:
             await message.answer(Strings.get("failed_to_save_credentials", user_lang))
     except Exception as e:
-        logging.error(f"Error in process_library_phone_number: {e}")
+        logging.error(f"Error in process_library_password: {type(e).__name__}: {e}")
         await message.answer(Strings.get("unexpected_error", user_lang))
-    finally:
-        await message.delete()
-        await state.clear()
 
 
 def register_handlers(dp: Dispatcher):
@@ -305,8 +427,8 @@ def register_handlers(dp: Dispatcher):
         process_library_username, LibraryRegistrationStates.waiting_for_username
     )
     dp.message.register(
-        process_library_password, LibraryRegistrationStates.waiting_for_password
+        process_library_phone_number, LibraryRegistrationStates.waiting_for_phone_number
     )
     dp.message.register(
-        process_library_phone_number, LibraryRegistrationStates.waiting_for_phone_number
+        process_library_password, LibraryRegistrationStates.waiting_for_password
     )

@@ -52,8 +52,6 @@ Keep the bill under the included usage:
   notification and not as an invoice.
 - Read the service's Metrics tab after each deploy that touches the notification loop,
   the caches or the dependencies.
-- Gemini is billed to the Google account that owns `GEMINI_API_KEY`, not to Railway;
-  see Phase 2.
 
 <!-- FILL IN: the observed monthly average of RAM / CPU and the monthly usage budget, and the date they were read -->
 
@@ -74,11 +72,7 @@ Cheap, no code, and everything else depends on them.
 
 Fixes for things users can already hit. Ordered by how badly they bite.
 
-- [ ] **The assistant's history outlives `/unregister`.** One line in
-      `auth.delete_all_user_data`; the project rule that a per-user store is cleared there
-      is currently broken
-      ([entry](KNOWN_ISSUES.md#the-assistants-chat-history-outlives-unregister)).
-- [ ] **A restart in the middle of `/register` hands the password to the assistant.**
+- [ ] **A restart in the middle of `/register` leaves the typed password in the chat.**
       Decide between persisting the FSM step (never the typed secrets) and a guard in
       `common.other_message` for users who have no row yet
       ([entry](KNOWN_ISSUES.md#a-restart-loses-a-registration-in-progress)).
@@ -98,33 +92,28 @@ Fixes for things users can already hit. Ordered by how badly they bite.
       ([entry](KNOWN_ISSUES.md#notify-has-no-pacing-and-no-record)).
 - [ ] **Move the English-only literals into `app/strings.py`** with the add-string skill
       ([entry](KNOWN_ISSUES.md#some-replies-are-english-only)).
-- [ ] **Make the Gemini model name a setting** so retiring a model is a variable change,
-      not a deploy ([entry](KNOWN_ISSUES.md#the-gemini-model-name-is-hard-coded)).
 
 ## Phase 2 — Footprint
 
-Aim: lower average RAM and a bounded Gemini bill, without losing a feature. Measure first,
+Aim: lower average RAM, without losing a feature. Measure first,
 change second; every item here needs a before and after number.
 
 - [ ] **Measure.** Log resident memory and the cycle duration on the existing
       `Notification cycle finished` line. Memory peaks are most likely the notification
       cycle (five users at a time, many requests each) or `/qr` and `/info` image work,
       but that is a guess until the line says so.
-- [ ] **Find the baseline.** Check what is imported at startup (the Gemini SDK, Pillow,
-      SQLAlchemy) and whether `google-genai` can be imported only when a key is set.
-- [ ] **Bound the in-memory dictionaries.** `todos._items_cache`, `chat_history_storage`
+- [ ] **Find the baseline.** Measured: at startup the bot's imports take about 202 MB of
+      private memory on Python 3.12, of which `aiogram` is about 129 MB, because
+      `aiogram.types` builds pydantic validators for every Telegram type. `google-genai`
+      was about 14 MB and has been removed together with the chat assistant. Still to
+      check: Pillow and SQLAlchemy, and whether anything else can be imported lazily.
+- [ ] **Bound the in-memory dictionaries.** `todos._items_cache`
       and the anti-spam timestamps gain an entry per user and never lose one. Small each,
       but unbounded; evict on read or on a timer.
-- [ ] **Cap the assistant per user per day.** The anti-spam limit is one message every
-      two seconds, which bounds nothing over a day. Every message also resends the whole
-      knowledge base in the prompt; keep it short or trim it.
 - [ ] **Thin the notification cycle.** A user costs a login plus up to five requests per
       subject every 30 minutes. Candidates: a longer interval inside quiet hours, and
       skipping the per-subject reads that cannot produce a message. Do not trade
       correctness for requests: the 1h and 2h reminders must still be on time.
-- [ ] **Drop `bs4==0.0.2`** from `requirements.txt`: it is a stub that only pulls in
-      `beautifulsoup4`, which is already pinned. (`pycryptodome` is used by `kw.py` and
-      `qr.py`; keep it.)
 - [ ] **Keep image files off the hot path.** The ID photo is cached under the working
       directory, not `DATA_DIR`, so Railway fetches it again after every deploy
       ([entry](KNOWN_ISSUES.md#a-cached-id-photo-is-never-refreshed)).

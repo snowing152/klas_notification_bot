@@ -392,3 +392,208 @@ async def test_a_failed_delete_still_leaves_the_password_step(fake_api):
     message.answer.assert_awaited_with(
         Strings.get("registration_successful", Language.EN)
     )
+
+
+async def test_register_with_another_id_drops_everything_kept_for_the_old_one(
+    fake_api, tmp_path, monkeypatch
+):
+    from app.database.database import get_sent_notifications, record_sent_notifications
+    from app.handlers import student_info, todos
+    from app.services import notifications
+
+    monkeypatch.setattr(student_info, "PHOTOS_DIR", tmp_path)
+    await _register(username="2023111111")
+    await record_sent_notifications("42", [("Algorithms_homeworks_Report", "new")])
+    todos._items_cache["42"] = (0.0, [])
+    notifications._unrecorded["42"] = [("Algorithms_homeworks_Report", "t3")]
+    photo = student_info.student_photo_path("42")
+    photo.write_bytes(b"jpeg")
+    fake_api(approval=TWO_FACTOR)
+
+    try:
+        await auth.process_password(_message("pw"), _state(username="2024000000"))
+
+        assert await get_sent_notifications("42") == {}
+        assert "42" not in todos._items_cache
+        assert "42" not in notifications._unrecorded
+        assert not photo.exists()
+    finally:
+        todos._items_cache.clear()
+        notifications._unrecorded.clear()
+
+
+async def test_register_with_the_same_id_keeps_the_notification_history(fake_api):
+    from app.database.database import get_sent_notifications, record_sent_notifications
+
+    await _register()
+    await record_sent_notifications("42", [("Algorithms_homeworks_Report", "new")])
+    fake_api(approval=TWO_FACTOR)
+
+    await auth.process_password(_message("pw"), _state())
+
+    assert await get_sent_notifications("42") == {"Algorithms_homeworks_Report": {"new"}}
+
+
+async def test_a_failed_save_keeps_the_old_accounts_notification_history(
+    fake_api, monkeypatch
+):
+    from app.database.database import get_sent_notifications, record_sent_notifications
+
+    await _register(username="2023111111")
+    await record_sent_notifications("42", [("Algorithms_homeworks_Report", "new")])
+    fake_api()
+
+    async def refused(*args, **kwargs):
+        return False
+
+    monkeypatch.setattr(auth, "save_user", refused)
+
+    await auth.process_password(_message("pw"), _state(username="2024000000"))
+
+    assert (await get_user("42")).username == "2023111111"
+    assert await get_sent_notifications("42") == {"Algorithms_homeworks_Report": {"new"}}
+
+
+async def test_register_is_refused_after_three_rejected_passwords(fake_api):
+    """KLAS locks an account after five; the bot must stop well before."""
+    api = fake_api(first=WRONG)
+    for _ in range(3):
+        await auth.process_password(_message("wrong"), _state())
+    assert api.attempts == 3
+
+    message = _message("wrong")
+    await auth.process_password(message, _state())
+
+    assert api.attempts == 3, "the fourth attempt must not reach KLAS"
+    message.answer.assert_awaited_with(
+        Strings.get("register_attempts_limited", Language.EN)
+    )
+    message.delete.assert_awaited()
+
+
+async def test_the_limit_is_per_student_number(fake_api):
+    api = fake_api(first=WRONG)
+    for _ in range(3):
+        await auth.process_password(_message("wrong"), _state("2024000000"))
+
+    await auth.process_password(_message("wrong"), _state("2024999999"))
+
+    assert api.attempts == 4
+
+
+async def test_network_failures_do_not_count_toward_the_limit(fake_api):
+    api = fake_api(first=DOWN)
+    for _ in range(5):
+        await auth.process_password(_message("pw"), _state())
+
+    assert api.attempts == 5
+
+
+async def test_a_good_login_forgets_earlier_failures(fake_api):
+    api = fake_api(first=WRONG)
+    for _ in range(2):
+        await auth.process_password(_message("wrong"), _state())
+    api.first = TWO_FACTOR
+    await auth.process_password(_message("right"), _state())
+    api.first = WRONG
+    for _ in range(3):
+        await auth.process_password(_message("wrong"), _state())
+
+    assert api.attempts == 2 + 1 + 3
+
+
+def test_failures_expire_after_the_window(monkeypatch):
+    from app.services import login_limiter
+
+    clock = [1000.0]
+    monkeypatch.setattr(login_limiter.time, "monotonic", lambda: clock[0])
+    for _ in range(3):
+        assert login_limiter.reserve("2024000000")
+        login_limiter.finish("2024000000", rejected=True)
+    assert login_limiter.is_locked("2024000000")
+
+    clock[0] += login_limiter.WINDOW_SECONDS + 1
+
+    assert not login_limiter.is_locked("2024000000")
+
+
+def test_in_flight_attempts_count_like_failures():
+    from app.services import login_limiter
+
+    assert all(login_limiter.reserve("2024000001") for _ in range(3))
+    assert not login_limiter.reserve("2024000001")
+
+    login_limiter.finish("2024000001")  # a network failure frees its slot
+
+    assert login_limiter.reserve("2024000001")
+
+
+def test_the_tracked_numbers_are_capped(monkeypatch):
+    from app.services import login_limiter
+
+    monkeypatch.setattr(login_limiter, "MAX_TRACKED", 5)
+    for n in range(20):
+        login_limiter.reserve(str(n))
+        login_limiter.finish(str(n), rejected=True)
+
+    assert len(login_limiter._failures) == 5
+    assert "19" in login_limiter._failures and "0" not in login_limiter._failures
+
+
+async def test_concurrent_wrong_passwords_for_one_number_stop_at_three(monkeypatch):
+    """Check-then-act across the slow KLAS call let every account through."""
+    gate = asyncio.Event()
+
+    class SlowWrongApi(FakeApi):
+        async def attempt_login(self, login_id, password):
+            self.attempts += 1
+            await gate.wait()
+            return WRONG
+
+    api = SlowWrongApi()
+    monkeypatch.setattr(klas_login, "KwangwoonUniversityApi", lambda: api)
+    messages = [_message("wrong", user_id=100 + i) for i in range(6)]
+    tasks = [
+        asyncio.create_task(auth.process_password(m, _state())) for m in messages
+    ]
+    await asyncio.sleep(0.05)
+    gate.set()
+    await asyncio.gather(*tasks)
+
+    assert api.attempts == 3
+    refused = Strings.get("register_attempts_limited", Language.EN)
+    assert sum(1 for m in messages if m.answer.await_args.args[0] == refused) == 3
+
+
+async def test_a_full_width_student_number_is_normalised():
+    message = _message("\uff12\uff10\uff12\uff14\uff10\uff10\uff10\uff10\uff10\uff10 ")
+    state = AsyncMock()
+
+    await auth.process_username(message, state)
+
+    state.update_data.assert_awaited_once_with(username="2024000000")
+
+
+@pytest.mark.parametrize("text", [None, "", "abc", "2024 000", "20240000x", "\u0662\u0660"])
+async def test_a_bad_student_number_is_refused_and_the_state_is_kept(text):
+    message = _message(text)
+    state = AsyncMock()
+
+    await auth.process_username(message, state)
+
+    message.answer.assert_awaited_once_with(
+        Strings.get("student_number_digits_only", Language.EN)
+    )
+    state.set_state.assert_not_called()
+    state.clear.assert_not_called()
+
+
+async def test_a_non_text_password_keeps_the_state(fake_api):
+    api = fake_api()
+    message = _message(None)
+    state = _state()
+
+    await auth.process_password(message, state)
+
+    state.clear.assert_not_called()
+    assert api.attempts == 0

@@ -1,6 +1,7 @@
 import asyncio
 from datetime import datetime
 
+import aiohttp
 import pytest
 
 from app.services import food as food_service
@@ -11,6 +12,7 @@ from app.services import food as food_service
 HTML_WITH_ONE_EMPTY_DAY = """
 <div class="table-scroll-box">
   <table class="tbl-list">
+    <thead><tr><th><span class="nowDate">2026-09-14</span></th></tr></thead>
     <tbody class="dietData">
       <tr>
         <td class="vt al"><pre>Mon breakfast</pre></td>
@@ -71,7 +73,7 @@ def _stub_fetch(monkeypatch, *html_sequence, delay=0):
     """Stub aiohttp.ClientSession for fetch_weekly_menu; returns the call log."""
     calls = []
 
-    def factory():
+    def factory(**kwargs):
         return FakeFoodSession(html_sequence, calls, delay=delay)
 
     monkeypatch.setattr(food_service.aiohttp, "ClientSession", factory)
@@ -89,9 +91,13 @@ def reset_food_cache():
     next test's cache."""
     food_service.local_cache.clear()
     food_service._cached_week = None
+    food_service._page_week_unknown = False
+    food_service._retry_at.clear()
     yield
     food_service.local_cache.clear()
     food_service._cached_week = None
+    food_service._page_week_unknown = False
+    food_service._retry_at.clear()
 
 
 @pytest.mark.asyncio
@@ -129,6 +135,164 @@ async def test_get_menu_for_day_fetches_only_once_per_week(monkeypatch):
 
     for _ in range(3):
         await food_service.get_menu_for_day(0, food_service.Language.EN)
+
+    assert len(calls) == 1
+
+
+SUNDAY_WEEK_A = datetime(2026, 9, 20, 12, 0)  # ISO week 38, Monday is week 39
+
+def _page(monday: str, breakfast: str) -> str:
+    """The menu page as KLAS-side HTML: a header cell with the date, then one
+    breakfast row (Monday's cell is `breakfast`)."""
+    return f"""
+<div class="table-scroll-box">
+  <table class="tbl-list">
+    <thead><tr><th><span class="nowDate">{monday}</span></th></tr></thead>
+    <tbody class="dietData">
+      <tr><td class="vt al"><pre>{breakfast}</pre></td></tr>
+    </tbody>
+  </table>
+</div>
+"""
+
+
+PAGE_WEEK_38 = _page("2026-09-14", "Old Monday")
+PAGE_WEEK_39 = _page("2026-09-21", "Next Monday")
+EN = food_service.Language.EN
+NOT_PUBLISHED = food_service.Strings.get("menu_not_published", EN)
+
+
+def _advance_clock(monkeypatch, seconds):
+    start = food_service.time.monotonic()
+    monkeypatch.setattr(food_service.time, "monotonic", lambda: start + seconds)
+
+
+@pytest.mark.asyncio
+async def test_page_week_is_read_from_the_page_not_the_caller(monkeypatch):
+    _stub_fetch(monkeypatch, PAGE_WEEK_38)
+    _freeze_now(monkeypatch, SUNDAY_WEEK_A)
+
+    await food_service.fetch_weekly_menu()
+
+    assert food_service._cached_week == (2026, 38)
+
+
+@pytest.mark.asyncio
+async def test_sunday_with_the_page_still_on_this_week_is_not_published(monkeypatch):
+    calls = _stub_fetch(monkeypatch, PAGE_WEEK_38)
+    _freeze_now(monkeypatch, SUNDAY_WEEK_A)
+
+    first = await food_service.get_tomorrow_school_food_menu(EN)
+    second = await food_service.get_tomorrow_school_food_menu(EN)
+
+    assert first == second == NOT_PUBLISHED
+    assert len(calls) == 1  # no re-scrape on the second request within the hour
+
+
+@pytest.mark.asyncio
+async def test_the_missed_week_is_rechecked_after_an_hour(monkeypatch):
+    calls = _stub_fetch(monkeypatch, PAGE_WEEK_38, PAGE_WEEK_39)
+    _freeze_now(monkeypatch, SUNDAY_WEEK_A)
+    await food_service.get_tomorrow_school_food_menu(EN)
+
+    _advance_clock(monkeypatch, food_service.RECHECK_SECONDS + 1)
+    text = await food_service.get_tomorrow_school_food_menu(EN)
+
+    assert len(calls) == 2
+    assert "Next Monday" in text
+
+
+@pytest.mark.asyncio
+async def test_sunday_with_the_page_already_on_next_week_shows_it(monkeypatch):
+    calls = _stub_fetch(monkeypatch, PAGE_WEEK_39)
+    _freeze_now(monkeypatch, SUNDAY_WEEK_A)
+
+    text = await food_service.get_tomorrow_school_food_menu(EN)
+
+    assert "Next Monday" in text
+    assert len(calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_monday_after_a_sunday_fetch_of_the_old_page_refetches(monkeypatch):
+    calls = _stub_fetch(monkeypatch, PAGE_WEEK_38, PAGE_WEEK_39)
+    _freeze_now(monkeypatch, SUNDAY_WEEK_A)
+    await food_service.get_tomorrow_school_food_menu(EN)
+
+    _freeze_now(monkeypatch, datetime(2026, 9, 21, 9, 0))
+    _advance_clock(monkeypatch, 15 * 3600)
+    text = await food_service.get_today_school_food_menu(EN)
+
+    assert len(calls) == 2
+    assert "Next Monday" in text
+    assert "Old Monday" not in text
+
+
+@pytest.mark.asyncio
+async def test_an_unreadable_page_date_is_not_published_and_rechecked_hourly(
+    monkeypatch, caplog
+):
+    """Guessing today's week would pass an old page off as the new week."""
+    calls = _stub_fetch(
+        monkeypatch, _page("not-a-date", "Mon here"), PAGE_WEEK_38
+    )
+    _freeze_now(monkeypatch, MONDAY_WEEK_A)
+
+    with caplog.at_level("WARNING"):
+        text = await food_service.get_menu_for_day(0, EN)
+
+    assert text == NOT_PUBLISHED
+    assert food_service._cached_week is None
+    assert "Could not read the week" in caplog.text
+    assert await food_service.get_menu_for_day(0, EN) == NOT_PUBLISHED
+    assert len(calls) == 1
+
+    _advance_clock(monkeypatch, food_service.RECHECK_SECONDS + 1)
+    assert "Old Monday" in await food_service.get_menu_for_day(0, EN)
+    assert len(calls) == 2
+
+
+@pytest.mark.asyncio
+async def test_a_failed_fetch_is_not_retried_by_every_request(monkeypatch):
+    calls = _stub_fetch(monkeypatch, HTML_MISSING_STRUCTURE, PAGE_WEEK_38)
+    _freeze_now(monkeypatch, MONDAY_WEEK_A)
+
+    await food_service.get_menu_for_day(0, EN)
+    await food_service.get_menu_for_day(0, EN)
+    assert len(calls) == 1
+
+    _advance_clock(monkeypatch, food_service.FAILURE_RECHECK_SECONDS + 1)
+    assert "Old Monday" in await food_service.get_menu_for_day(0, EN)
+    assert len(calls) == 2
+
+
+@pytest.mark.asyncio
+async def test_a_network_error_is_logged_and_throttled(monkeypatch, caplog):
+    calls = []
+
+    def broken(*args, **kwargs):
+        calls.append(1)
+        raise aiohttp.ClientConnectionError("down")
+
+    monkeypatch.setattr(food_service.aiohttp, "ClientSession", broken)
+    _freeze_now(monkeypatch, MONDAY_WEEK_A)
+
+    with caplog.at_level("ERROR"):
+        text = await food_service.get_menu_for_day(0, EN)
+        await food_service.get_menu_for_day(0, EN)
+
+    assert "No data" in text
+    assert "down" in caplog.text
+    assert len(calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_a_weekday_tomorrow_in_the_same_week_does_not_refetch(monkeypatch):
+    calls = _stub_fetch(monkeypatch, HTML_WITH_ONE_EMPTY_DAY)
+    _freeze_now(monkeypatch, MONDAY_WEEK_A)
+
+    await food_service.get_today_school_food_menu(food_service.Language.EN)
+    await food_service.get_tomorrow_school_food_menu(food_service.Language.EN)
 
     assert len(calls) == 1
 
@@ -189,6 +353,7 @@ async def test_a_failed_fetch_does_not_block_the_next_attempt(monkeypatch):
     _freeze_now(monkeypatch, MONDAY_WEEK_A)
 
     first = await food_service.get_menu_for_day(0, food_service.Language.EN)
+    _advance_clock(monkeypatch, food_service.FAILURE_RECHECK_SECONDS + 1)
     second = await food_service.get_menu_for_day(0, food_service.Language.EN)
 
     assert "No data" in first

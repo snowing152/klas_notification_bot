@@ -54,7 +54,8 @@ UpdateSession.do` resets it, which is what KLAS's own "연장" button calls.
 `None`, not `False`, when KLAS could not be reached, so a network fault never ends a kept
 session. Whether KLAS also has a hard limit on how long a session may live is not known
 yet: `klas_session.mark_session_dead` logs `KLAS session of <user> ended after <n> hours`
-to find out.
+to find out, and every cycle summary ends with `oldest KLAS session <n>h`, a lower bound
+that grows while no session has died.
 
 `app/services/klas_session.py` keeps one session per user between operations.
 `open_session(user)` restores the stored cookies, calls `keep_alive()`, and yields
@@ -119,6 +120,13 @@ from a "selected subject" kept in the session, even though every body carries
 on one session matched the answers taken one at a time. If a category ever shows up
 under the wrong subject, this is the first thing to check again.
 
+KLAS sends keys with a `null` value as often as it omits them, so the todo parsers
+normalize while reading: a null title becomes `""` (`/show` then shows "Untitled"), a
+null subject name becomes `"Unknown Subject"`, and a row with a null or malformed
+start/deadline is skipped with a `without a usable deadline` warning instead of raising,
+which would fail the TaskGroup and turn the whole list into `None`. Team-project
+deadlines carry an offset (`...+0900`); it is converted to Seoul time, not just dropped.
+
 What the return values mean:
 
 | Call | `None` | Empty |
@@ -165,10 +173,10 @@ built, so the requests in `get_student_photo` have to run back to back.
 
 `get_todo_list()` reads five per subject — lectures,
 homeworks, team projects, quizzes and 토론 (`discussions`) — and a category only reaches
-the user if it appears in *both* `TYPE_EMOJIS` dicts: `app/handlers/todos.py`'s drives
-`/show`, `app/services/notifications.py`'s decides what `_collect_messages` even looks at,
+the user if it appears in `TYPE_EMOJIS` (`app/utils/assignment_render.py`): it drives `/show`,
+`notifications.py` imports the same dict and `_collect_messages` only looks at its keys,
 and `ASSIGNMENT_TYPES` in the handler decides which side of the lectures/assignments
-filter it falls on. Each also needs a `type_<name>` string in all three languages.
+filter it falls on. No label string is needed: the emoji is the label.
 `discussions` is the odd one: `DscsnStdList.do` carries no "submitted" flag (its
 `toroncnt` is how many posts the whole class wrote), so participation costs a second
 request, `DscsnOpinionList.do`, per discussion whose date window is open — matched
@@ -184,11 +192,25 @@ Adding a category therefore touches, in order:
 
 1. a `_get_<name>` request and a `_get_not_done_<name>_info` parser in `kw.py`, and the
    list of fetches and the returned dict in `_get_subject_todo()`;
-2. `TYPE_EMOJIS` in `app/handlers/todos.py`, and `ASSIGNMENT_TYPES` there unless it is
+2. `TYPE_EMOJIS` (and `TYPE_ORDER`, the tie-break order) in `app/utils/assignment_render.py`, and `ASSIGNMENT_TYPES` in `app/handlers/todos.py` unless it is
    something to watch rather than submit;
-3. `TYPE_EMOJIS` in `app/services/notifications.py`;
-4. `type_<name>` in EN, KO and RU ([LOCALIZATION.md](LOCALIZATION.md));
-5. tests in `tests/unit/test_kw.py`, fed with a captured response.
+3. tests in `tests/unit/test_kw.py`, fed with a captured response.
+
+## The cafeteria menu page
+
+`app/services/food.py` scrapes `https://www.kw.ac.kr/ko/life/facility11.jsp` (not KLAS,
+but the same "unofficial page" rules apply). Format confirmed on 2026-11-25: inside
+`div.table-scroll-box > table.tbl-list` the header has one `<span class="nowDate">`
+per weekday holding an ISO date (`2026-11-23`, Monday first), and an
+`<h4>조회기간 : 2026-11-23 ~ 2026-11-27</h4>` sits above the table. The page does not
+switch week at midnight: on Sunday it still shows the current week.
+
+So the cache is marked with the week of the first `nowDate`, not with the week asked
+for. A request for a week the page does not show gets the localized
+`menu_not_published` text, and the page is scraped again at most once per hour for that
+week (60 seconds after a failed scrape). If the date cannot be read the cache is left
+unmarked and the same "not published" text is shown, with a warning in the log:
+guessing today's week would serve an old menu as the new one.
 
 ## When KLAS changes
 

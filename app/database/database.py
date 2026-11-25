@@ -1,5 +1,8 @@
 import logging
-from sqlalchemy import delete, select, update
+from enum import Enum
+
+from sqlalchemy import delete, event, exists, literal, select, union_all, update
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
@@ -17,8 +20,32 @@ from app.database.models import (
 from app.strings import Language
 from app.config import settings
 
+
+def make_engine(url: str):
+    """Build the async engine with the privacy settings the bot relies on.
+
+    hide_parameters keeps bound values (encrypted passwords, phone numbers,
+    student numbers) out of the text of a StatementError, which the handlers'
+    error logs would otherwise copy. secure_delete makes SQLite overwrite
+    deleted rows with zeros on every new connection; without it a deleted
+    password stays readable in the file's free pages, which defeats
+    "delete my data".
+    """
+    new_engine = create_async_engine(url, echo=False, hide_parameters=True)
+
+    @event.listens_for(new_engine.sync_engine, "connect")
+    def _set_secure_delete(dbapi_connection, _record):
+        cursor = dbapi_connection.cursor()
+        try:
+            cursor.execute("PRAGMA secure_delete=ON")
+        finally:
+            cursor.close()
+
+    return new_engine
+
+
 # Create an async engine
-engine = create_async_engine(settings.DATABASE_URL, echo=False)
+engine = make_engine(settings.DATABASE_URL)
 
 # Create an async session
 AsyncSessionLocal = sessionmaker(
@@ -130,7 +157,7 @@ async def get_all_users():
 
 
 async def delete_user(user_id: str):
-    """Delete user from database"""
+    """Delete user from database. True when the row is gone, including when there was none."""
     async with AsyncSessionLocal() as session:
         async with session.begin():
             try:
@@ -139,7 +166,7 @@ async def delete_user(user_id: str):
                     await session.delete(user)
                     await session.commit()
                     return True
-                return False
+                return True
             except SQLAlchemyError as e:
                 await session.rollback()
                 logging.error(f"Error deleting user: {e}")
@@ -197,7 +224,7 @@ async def get_all_library_users():
 
 
 async def delete_library_user(user_id: str):
-    """Delete library user from database"""
+    """Delete library user from database. True when the row is gone, including when there was none."""
     async with AsyncSessionLocal() as session:
         async with session.begin():
             try:
@@ -206,7 +233,7 @@ async def delete_library_user(user_id: str):
                     await session.delete(user)
                     await session.commit()
                     return True
-                return False
+                return True
             except SQLAlchemyError as e:
                 await session.rollback()
                 logging.error(f"Error deleting library user: {e}")
@@ -231,26 +258,80 @@ async def get_sent_notifications(user_id: str) -> dict[str, set[str]]:
             return None
 
 
-async def record_sent_notifications(user_id: str, entries) -> bool:
-    """Mark (assignment_key, kind) pairs as delivered. Called after a send."""
-    if not entries:
-        return True
+_INSERT_SLICE = 200
 
+
+class RecordResult(Enum):
+    """What `record_sent_notifications` did, so the caller can tell a refusal
+    worth retrying from a user who no longer exists."""
+
+    RECORDED = "recorded"
+    USER_GONE = "user_gone"
+    FAILED = "failed"
+
+
+async def record_sent_notifications(user_id: str, entries) -> RecordResult:
+    """Mark (assignment_key, kind) pairs as delivered. Called after a send.
+
+    A pair that is already stored, or listed twice, is skipped rather than
+    failing the batch: the key is only (user, title, kind), so two same-titled
+    assignments produce the same pair, and one rejected row used to make every
+    later write fail with it.
+
+    Rows are only written for a registered user. The check is part of the
+    INSERT itself (`INSERT ... SELECT ... WHERE EXISTS`), because a separate
+    SELECT and INSERT are not atomic under pysqlite: a user deleted in between
+    would get assignment titles written back. USER_GONE means nothing was
+    stored because the user is not registered, FAILED that the database
+    refused (worth retrying).
+    """
+    if not entries:
+        return RecordResult.RECORDED
+
+    rows = list(dict.fromkeys((user_id, key, kind) for key, kind in entries))
+    registered = exists().where(User.user_id == user_id)
     async with AsyncSessionLocal() as session:
         async with session.begin():
             try:
-                session.add_all(
-                    SentNotification(
-                        user_id=user_id, assignment_key=key, kind=kind
+                inserted = 0
+                # SQLite caps a compound SELECT at 500 terms, so a large
+                # backlog (the seeding cycle) goes in slices. They share the
+                # transaction, and each slice carries its own user check.
+                for start in range(0, len(rows), _INSERT_SLICE):
+                    candidates = union_all(
+                        *(
+                            select(
+                                literal(row_user).label("user_id"),
+                                literal(row_key).label("assignment_key"),
+                                literal(row_kind).label("kind"),
+                            )
+                            for row_user, row_key, row_kind in rows[start : start + _INSERT_SLICE]
+                        )
+                    ).subquery()
+                    result = await session.execute(
+                        sqlite_insert(SentNotification)
+                        .from_select(
+                            ["user_id", "assignment_key", "kind"],
+                            select(
+                                candidates.c.user_id,
+                                candidates.c.assignment_key,
+                                candidates.c.kind,
+                            ).where(registered),
+                        )
+                        .on_conflict_do_nothing()
                     )
-                    for key, kind in entries
-                )
+                    inserted += result.rowcount
+                # Nothing inserted is either "all of it was stored already" or
+                # "no such user"; only the second is worth telling apart.
+                if inserted == 0 and await session.get(User, user_id) is None:
+                    logging.info(f"Not recording notifications for unregistered {user_id}")
+                    return RecordResult.USER_GONE
                 await session.commit()
-                return True
+                return RecordResult.RECORDED
             except SQLAlchemyError as e:
                 await session.rollback()
                 logging.error(f"Error recording sent notifications: {e}")
-                return False
+                return RecordResult.FAILED
 
 
 async def prune_sent_notifications(user_id: str, current_keys) -> bool:
@@ -275,12 +356,19 @@ async def prune_sent_notifications(user_id: str, current_keys) -> bool:
 
 
 async def get_notification_state(user_id: str):
-    """The user's notification bookkeeping row, created on first use."""
+    """The user's notification bookkeeping row, created on first use.
+
+    None when the database could not be read, and also when the user is not
+    registered (nothing is created for them): callers skip such a user.
+    """
     async with AsyncSessionLocal() as session:
         async with session.begin():
             try:
                 state = await session.get(NotificationState, user_id)
                 if state is None:
+                    if await session.get(User, user_id) is None:
+                        logging.info(f"Not creating notification state for unregistered {user_id}")
+                        return None
                     state = NotificationState(
                         user_id=user_id,
                         seeded=False,
@@ -297,12 +385,21 @@ async def get_notification_state(user_id: str):
 
 
 async def update_notification_state(user_id: str, **fields) -> bool:
-    """Set columns on the user's notification state row, creating it if needed."""
+    """Set columns on the user's notification state row, creating it if needed.
+
+    Only for a registered user: a cycle that was running while the user
+    deleted their data would otherwise bring the row back (a `seeded=True`
+    with no history would later announce everything as new). Answers False
+    when nothing was written.
+    """
     async with AsyncSessionLocal() as session:
         async with session.begin():
             try:
                 state = await session.get(NotificationState, user_id)
                 if state is None:
+                    if await session.get(User, user_id) is None:
+                        logging.info(f"Not writing notification state for unregistered {user_id}")
+                        return False
                     state = NotificationState(user_id=user_id)
                     session.add(state)
                 for name, value in fields.items():
@@ -426,12 +523,19 @@ async def delete_klas_session(user_id: str) -> bool:
 
 
 async def get_user_settings(user_id: str):
-    """The user's notification preferences, created with defaults on first use."""
+    """The user's notification preferences, created with defaults on first use.
+
+    None when the database could not be read, and also when the user is not
+    registered (no row is created for them).
+    """
     async with AsyncSessionLocal() as session:
         async with session.begin():
             try:
                 settings_row = await session.get(UserSettings, user_id)
                 if settings_row is None:
+                    if await session.get(User, user_id) is None:
+                        logging.info(f"Not creating settings for unregistered {user_id}")
+                        return None
                     settings_row = UserSettings(user_id=user_id)
                     session.add(settings_row)
                     await session.commit()

@@ -2,10 +2,8 @@ aiogram==3.31.0
 aiohttp==3.14.3
 aiosqlite==0.22.1
 beautifulsoup4==4.15.0
-bs4==0.0.2
 cryptography==50.0.1
 fake-useragent==2.2.0
-google-genai==2.21.0
 Pillow==12.3.0
 pycryptodome==3.23.0
 pydantic==2.13.5
@@ -13,7 +11,6 @@ pydantic-settings==2.15.0
 python-dotenv==1.2.3
 qrcode==8.2
 SQLAlchemy==2.0.52
-telegramify-markdown==1.2.0
 # Ships the tz database as a package: app/utils/timezone.py resolves Asia/Seoul
 # through zoneinfo, and a slim container has no /usr/share/zoneinfo to read.
 tzdata==2026.3

@@ -55,7 +55,6 @@
 - 🍽️ **Dining Menu** - Daily cafeteria updates
 - 📰 **Campus News** - Latest KW announcements
 - 📱 **Library QR** - Quick library access codes
-- 🤖 **AI Assistant** - Chat about university life
 
 </td>
 </tr>
@@ -85,7 +84,6 @@
 
 - 🐍 **Python 3.12** (the version in `.python-version`)
 - 🤖 **Telegram Bot Token** ([Get one from @BotFather](https://t.me/botfather))
-- 🔑 **Google Gemini API Key** (Optional, for AI features)
 
 ### ⚡ Installation
 
@@ -121,7 +119,6 @@ cp .env.example .env
 ```env
 BOT_TOKEN=your_telegram_bot_token_here
 ADMIN_ID=your_telegram_user_id
-GEMINI_API_KEY=your_google_gemini_api_key_here
 ```
 
 [`.env.example`](.env.example) lists every variable the bot reads. The optional ones
@@ -238,10 +235,6 @@ graph TD
 Only the Telegram account matching `ADMIN_ID` in `.env` can use this. Each user receives
 the version matching their language, falling back to the `en:` text.
 
-### 🤖 **AI Assistant**
-
-Simply send any text message to chat with the AI about university life!
-
 ---
 
 ## 🔔 Smart Notifications
@@ -290,7 +283,7 @@ semester. In order:
 
 1. **Reliability** - fix what users can already hit: a registration lost on restart,
    prompts that swallow commands, a `/show` that is silently short.
-2. **Footprint** - measure and lower memory, bound the assistant's usage, keep the
+2. **Footprint** - measure and lower memory, keep the
    hosting bill inside the plan's included usage.
 3. **Usefulness** - a daily digest, "done" and per-subject mute on reminders, calendar
    export, then grades and course notices.
@@ -366,7 +359,6 @@ service settings add a volume mounted at `/data`. 1 GB is plenty.
 | ---------------- | ----------------------------------------- | ----------------------------------------------------------- |
 | `BOT_TOKEN`      | from [@BotFather](https://t.me/botfather) |                                                             |
 | `ADMIN_ID`       | your numeric Telegram id                  | ask [@userinfobot](https://t.me/userinfobot)                |
-| `GEMINI_API_KEY` | Google AI Studio key                      | optional, powers the AI chat                                |
 | `DATA_DIR`       | `/data`                                   | **required** — points the database at the volume            |
 | `ENCRYPTION_KEY` | your Fernet key                           | **required** — see below                                    |
 | `KW_TZ`          | —                                         | **leave unset.** Only to run on a timezone other than Seoul |
@@ -418,7 +410,7 @@ register again:
 | -------------- | --------------------------------------------------------------------------------------------------------------------------------- |
 | `bot_users.db` | All registered users and their encrypted credentials. On Railway, keep it on the mounted volume.                                  |
 | The Fernet key | **Lose it and every stored password becomes undecryptable.** `ENCRYPTION_KEY` env var, or `encryption_key.key` when self-hosting. |
-| `.env`         | Bot token, Gemini key, admin ID                                                                                                   |
+| `.env`         | Bot token, admin ID                                                                                                               |
 
 ---
 
@@ -449,8 +441,7 @@ pytest -v
 - 🔐 **Encrypted Storage** - User passwords encrypted with Fernet
 - 🛡️ **Anti-Spam** - Built-in rate limiting
 - 🔑 **Secure Keys** - Environment-based configuration
-- 🚫 **No Data Sharing** - Your passwords go only to Kwangwoon's own services. Free-text
-  messages to the AI assistant are sent to Google Gemini, so keep personal data out of them
+- 🚫 **No Data Sharing** - Your passwords go only to Kwangwoon's own services.
 
 ### ⚠️ Security Best Practices
 
@@ -479,12 +470,6 @@ pytest -v
 - ✅ Verify KW credentials
 - ✅ Check network connectivity
 - ✅ Try re-registering with `/register`
-
-### AI Assistant Replies With An Error
-
-- ✅ Check `GEMINI_API_KEY` in `.env`
-- ✅ Check the logs (the Railway dashboard, or `logs/kwbot.log` when self-hosting) — an
-  expired model name shows up as a 404
 
 ### `/qr` Doesn't Work
 

@@ -3,7 +3,7 @@ import time
 
 import pytest
 import pytest_asyncio
-from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
+from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import sessionmaker
 
 from app.database import database as db
@@ -18,9 +18,8 @@ async def isolated_database(tmp_path, monkeypatch):
     resolve the module-level AsyncSessionLocal at call time, so a test that
     forgot to request this fixture would happily write to bot_users.db.
     """
-    engine = create_async_engine(
-        f"sqlite+aiosqlite:///{tmp_path / 'test.db'}", future=True
-    )
+    # make_engine, so the suite runs with hide_parameters and secure_delete on
+    engine = db.make_engine(f"sqlite+aiosqlite:///{tmp_path / 'test.db'}")
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
 
@@ -39,7 +38,13 @@ def host_timezone():
 
     app/config.py forces TZ=Asia/Seoul at import, so the test has to undo that
     to reproduce what the deployment actually looks like.
+
+    Skipped where time.tzset does not exist (Windows): the process clock cannot
+    be moved there, so these tests only run on Unix, like the deployment.
     """
+    if not hasattr(time, "tzset"):
+        pytest.skip("time.tzset is Unix-only; the host timezone cannot be changed here")
+
     original = os.environ.get("TZ")
 
     def _set(name: str):
@@ -69,3 +74,13 @@ async def test_session(isolated_database):
     )
     async with async_session() as session:
         yield session
+
+
+@pytest.fixture(autouse=True)
+def fresh_login_limiter():
+    """The failed-login counter is module-level; a test must not inherit it."""
+    from app.services import login_limiter
+
+    login_limiter._failures.clear()
+    yield
+    login_limiter._failures.clear()
