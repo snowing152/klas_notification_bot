@@ -270,7 +270,7 @@ async def test_a_failed_fetch_is_not_retried_by_every_request(monkeypatch):
 async def test_a_network_error_is_logged_and_throttled(monkeypatch, caplog):
     calls = []
 
-    def broken():
+    def broken(*args, **kwargs):
         calls.append(1)
         raise aiohttp.ClientConnectionError("down")
 
