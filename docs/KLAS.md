@@ -119,6 +119,13 @@ from a "selected subject" kept in the session, even though every body carries
 on one session matched the answers taken one at a time. If a category ever shows up
 under the wrong subject, this is the first thing to check again.
 
+KLAS sends keys with a `null` value as often as it omits them, so the todo parsers
+normalize while reading: a null title becomes `""` (`/show` then shows "Untitled"), a
+null subject name becomes `"Unknown Subject"`, and a row with a null or malformed
+start/deadline is skipped with a `without a usable deadline` warning instead of raising,
+which would fail the TaskGroup and turn the whole list into `None`. Team-project
+deadlines carry an offset (`...+0900`); it is converted to Seoul time, not just dropped.
+
 What the return values mean:
 
 | Call | `None` | Empty |
@@ -187,6 +194,22 @@ Adding a category therefore touches, in order:
 2. `TYPE_EMOJIS` (and `TYPE_ORDER`, the tie-break order) in `app/utils/assignment_render.py`, and `ASSIGNMENT_TYPES` in `app/handlers/todos.py` unless it is
    something to watch rather than submit;
 3. tests in `tests/unit/test_kw.py`, fed with a captured response.
+
+## The cafeteria menu page
+
+`app/services/food.py` scrapes `https://www.kw.ac.kr/ko/life/facility11.jsp` (not KLAS,
+but the same "unofficial page" rules apply). Format confirmed on 2026-11-25: inside
+`div.table-scroll-box > table.tbl-list` the header has one `<span class="nowDate">`
+per weekday holding an ISO date (`2026-11-23`, Monday first), and an
+`<h4>조회기간 : 2026-11-23 ~ 2026-11-27</h4>` sits above the table. The page does not
+switch week at midnight: on Sunday it still shows the current week.
+
+So the cache is marked with the week of the first `nowDate`, not with the week asked
+for. A request for a week the page does not show gets the localized
+`menu_not_published` text, and the page is scraped again at most once per hour for that
+week (60 seconds after a failed scrape). If the date cannot be read the cache is left
+unmarked and the same "not published" text is shown, with a warning in the log:
+guessing today's week would serve an old menu as the new one.
 
 ## When KLAS changes
 

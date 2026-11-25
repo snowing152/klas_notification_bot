@@ -90,6 +90,7 @@ def make_callback(data, user_id="700", language_code="en"):
     callback.from_user = from_user
     callback.message = AsyncMock(spec=types.Message)
     callback.message.edit_text = AsyncMock()
+    callback.message.edit_reply_markup = AsyncMock()
     callback.message.answer = AsyncMock()
     callback.answer = AsyncMock()
     return callback
@@ -561,3 +562,84 @@ async def test_nothing_is_cached_when_the_user_was_deleted_during_the_fetch():
         await todos._load_items("711")
 
     assert "711" not in todos._items_cache
+
+
+async def test_a_multi_message_filter_result_is_sent_fresh_in_order(monkeypatch):
+    """The keyboard sits on the last message of the old list. Editing it into
+    chunk 1 and sending chunks 2.. after it scrambled the chat."""
+    monkeypatch.setattr(
+        todos, "render_assignments", lambda *a, **k: ["part 1", "part 2", "part 3"]
+    )
+    await _register("730")
+    # Lectures and assignments both present, so the filter keyboard exists.
+    api = FakeApi(
+        todo_list=[
+            make_subject("Algorithms", [("lectures", "Week 3", 10), ("homeworks", "R", 5)])
+        ]
+    )
+    with patch_session(api):
+        callback = make_callback("show_all", user_id="730")
+        await process_show_filter_callback(callback)
+
+    callback.message.edit_text.assert_not_called()
+    callback.message.edit_reply_markup.assert_awaited_once_with(reply_markup=None)
+    sent = callback.message.answer.await_args_list
+    assert [call.args[0] for call in sent] == ["part 1", "part 2", "part 3"]
+    assert [call.kwargs["reply_markup"] is not None for call in sent] == [
+        False,
+        False,
+        True,
+    ]
+    callback.answer.assert_awaited_once_with()
+
+
+async def test_a_single_message_filter_result_edits_the_tapped_message(monkeypatch):
+    await _register("731")
+    api = FakeApi(
+        todo_list=[
+            make_subject("Algorithms", [("lectures", "Week 3", 10), ("homeworks", "R", 5)])
+        ]
+    )
+    with patch_session(api):
+        callback = make_callback("show_lectures", user_id="731")
+        await process_show_filter_callback(callback)
+
+    callback.message.edit_text.assert_awaited_once()
+    callback.message.edit_reply_markup.assert_not_called()
+    callback.message.answer.assert_not_called()
+
+
+async def test_a_refused_keyboard_removal_is_reported_not_swallowed(monkeypatch, caplog):
+    from aiogram.exceptions import TelegramBadRequest
+
+    monkeypatch.setattr(todos, "render_assignments", lambda *a, **k: ["a", "b"])
+    await _register("732")
+    api = FakeApi(todo_list=[make_subject("Algorithms", [("lectures", "Week 3", 10)])])
+    with patch_session(api):
+        callback = make_callback("show_all", user_id="732")
+        callback.message.edit_reply_markup.side_effect = TelegramBadRequest(
+            method=None, message="Bad Request: message can't be edited"
+        )
+        await process_show_filter_callback(callback)
+
+    callback.message.answer.assert_not_called()
+    callback.answer.assert_awaited_once_with(
+        Strings.get("unexpected_error", Language.EN)
+    )
+
+
+async def test_an_item_with_a_null_title_is_listed_as_untitled():
+    await _register("733")
+    todo_list = [make_subject("Algorithms", [("lectures", None, 10)])]
+    todo_list.append({"name": None, "todo": {"homeworks": [
+        {"title": None, "expire_at": timezone.now() + datetime.timedelta(hours=3)}
+    ]}})
+    api = FakeApi(todo_list=todo_list)
+    message = make_message(user_id="733")
+
+    with patch_session(api):
+        await show_all_assignments(message)
+
+    text = message.answer.call_args.args[0]
+    assert "Untitled" in text
+    assert "Unknown Subject" in text

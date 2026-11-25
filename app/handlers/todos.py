@@ -48,14 +48,14 @@ def _flatten_and_sort(todo_list: list[dict]) -> list[dict]:
     """
     items = []
     for subject in todo_list:
-        subject_name = subject.get("name", "Unknown Subject")
+        subject_name = subject.get("name") or "Unknown Subject"
         for assignment_type, assignments in subject["todo"].items():
             for assignment in assignments:
                 items.append(
                     {
                         "type": assignment_type,
                         "subject": subject_name,
-                        "title": assignment.get("title", "Untitled"),
+                        "title": assignment.get("title") or "Untitled",
                         "expire_at": assignment["expire_at"],
                     }
                 )
@@ -208,23 +208,28 @@ async def process_show_filter_callback(callback_query: types.CallbackQuery):
         keyboard = _filter_keyboard(pending, category, user_lang)
 
         try:
-            await callback_query.message.edit_text(
-                chunks[0],
-                reply_markup=keyboard if len(chunks) == 1 else None,
-                parse_mode="HTML",
-            )
+            if len(chunks) == 1:
+                await callback_query.message.edit_text(
+                    chunks[0], reply_markup=keyboard, parse_mode="HTML"
+                )
+            else:
+                # The keyboard sits on the last message of the list, so
+                # putting chunks[0] into it and sending the rest after it
+                # would leave the list out of order. Retire the tapped
+                # message's buttons and send the whole list again, with the
+                # keyboard on its last chunk.
+                await callback_query.message.edit_reply_markup(reply_markup=None)
+                for i, chunk in enumerate(chunks):
+                    await callback_query.message.answer(
+                        chunk,
+                        reply_markup=keyboard if i == len(chunks) - 1 else None,
+                        parse_mode="HTML",
+                    )
         except TelegramBadRequest as e:
             # A double-tap on the active filter is harmless; anything else
             # (e.g. "can't parse entities") means the user saw no update.
             if "message is not modified" not in str(e):
                 raise
-        for i, extra in enumerate(chunks[1:]):
-            is_last = i == len(chunks) - 2
-            await callback_query.message.answer(
-                extra,
-                reply_markup=keyboard if is_last else None,
-                parse_mode="HTML",
-            )
 
         await callback_query.answer()
     except Exception as e:
