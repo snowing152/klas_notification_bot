@@ -88,7 +88,6 @@ If something's not working, message me @bulochkaskefirochkom 💬 I'll sort it o
             "time_days": "{count}d",
             "time_hours": "{count}h",
             "time_minutes": "{count}m",
-            "time_left": "⏰ Time remaining: {time_str}",
             "too_many_messages": "I see you're sending messages quickly! Please pause briefly so I can catch up with your requests.",
             "student_info": """📚 Student Profile:
 👨‍🎓 Name: {name} (ID: {uid})
@@ -124,9 +123,8 @@ All options are buffet-style! Pay once and enjoy as much as you like 🍴
             "input_field_placeholder": "Choose an option...",
             "button_todos": "📋 Tasks",
             "button_qr": "📱 QR",
-            "notification_header": "{emoji} Less than {hours}h remaining!\n\n",
-            "notification_footer": "🚨 Don't forget to do it! 🚨",
-            "new_assignments_header": "🆕 New in KLAS:\n\n",
+            "reminder_header": "{emoji} Less than {hours}h left",
+            "new_assignments_header": "🆕 New in KLAS",
             "settings_header": """⚙️ Notification settings
 
 Tap a line to switch it.""",
@@ -249,7 +247,6 @@ KLAS 과제를 추적하고 마감일 전에 알려드려요 🧭
             "time_days": "{count}일",
             "time_hours": "{count}시간",
             "time_minutes": "{count}분",
-            "time_left": "⏰ 남은 시간: {time_str}",
             "too_many_messages": "메시지를 빠르게 보내고 계시네요! 제가 요청을 처리할 수 있도록 잠시만 기다려주세요.",
             "student_info": """📚 학생 프로필:
 👨‍🎓 이름: {name} (학번: {uid})
@@ -285,9 +282,8 @@ KLAS 과제를 추적하고 마감일 전에 알려드려요 🧭
             "input_field_placeholder": "메뉴를 선택하세요",
             "button_todos": "📋 할 일",
             "button_qr": "📱 QR",
-            "notification_header": "{emoji} {hours}시간 이내 마감입니다!\n\n",
-            "notification_footer": "🚨 잊지 말고 완료하세요! 🚨",
-            "new_assignments_header": "🆕 KLAS에 새로 등록되었습니다:\n\n",
+            "reminder_header": "{emoji} 마감까지 {hours}시간 미만",
+            "new_assignments_header": "🆕 KLAS에 새로 등록됨",
             "settings_header": """⚙️ 알림 설정
 
 항목을 누르면 켜고 끌 수 있습니다.""",
@@ -411,7 +407,6 @@ KLAS 과제를 추적하고 마감일 전에 알려드려요 🧭
             "time_days": "{count}д",
             "time_hours": "{count}ч",
             "time_minutes": "{count}м",
-            "time_left": "⏰ Осталось времени: {time_str}",
             "too_many_messages": "Вы отправляете сообщения слишком быстро! Пожалуйста, дайте мне немного времени обработать ваши запросы.",
             "student_info": """📚 Профиль студента:
 👨‍🎓 Имя: {name} (№: {uid})
@@ -447,9 +442,8 @@ KLAS 과제를 추적하고 마감일 전에 알려드려요 🧭
             "input_field_placeholder": "Выберите пункт меню...",
             "button_todos": "📋 Дела",
             "button_qr": "📱 QR",
-            "notification_header": "{emoji} Осталось менее {hours} ч!\n\n",
-            "notification_footer": "🚨 Не забудьте выполнить! 🚨",
-            "new_assignments_header": "🆕 Новое в KLAS:\n\n",
+            "reminder_header": "{emoji} Осталось менее {hours} ч",
+            "new_assignments_header": "🆕 Новое в KLAS",
             "settings_header": """⚙️ Настройки уведомлений
 
 Нажмите на строку, чтобы переключить.""",

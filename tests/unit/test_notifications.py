@@ -1,6 +1,7 @@
 import asyncio
 import datetime
 import logging
+import re
 from contextlib import asynccontextmanager
 
 import pytest
@@ -18,6 +19,7 @@ from app.keyboards import create_klas_relogin_keyboard
 from app.services import notifications
 from app.services.klas_session import KlasAccess, SessionStatus
 from app.strings import Language, Strings
+from app.utils.assignment_render import INDENT
 
 
 class FakeUser:
@@ -40,16 +42,22 @@ class FakeApi:
 class FakeBot:
     """Collects what would have been sent to Telegram."""
 
-    def __init__(self, fail=False):
+    def __init__(self, fail=False, fail_on_call=None):
         self.sent = []
         self.markups = []
+        self.parse_modes = []
         self.fail = fail
+        # 1-based number of the send_message call Telegram refuses, once.
+        self.fail_on_call = fail_on_call
+        self.calls = 0
 
-    async def send_message(self, chat_id, text, reply_markup=None):
-        if self.fail:
+    async def send_message(self, chat_id, text, reply_markup=None, parse_mode=None):
+        self.calls += 1
+        if self.fail or self.calls == self.fail_on_call:
             raise RuntimeError("Telegram said no")
         self.sent.append((chat_id, text))
         self.markups.append(reply_markup)
+        self.parse_modes.append(parse_mode)
 
 
 @pytest.fixture(autouse=True)
@@ -81,6 +89,20 @@ def make_todo(
             },
         }
     ]
+
+
+NBSP = INDENT
+
+
+def reminder_item(title, subject="Algorithms", type_="homeworks", hours=2.5, kind="t3"):
+    """An item as _collect_messages builds it, due `hours` after the test clock."""
+    return {
+        "type": type_,
+        "subject": subject,
+        "title": title,
+        "expire_at": at_hour(12) + datetime.timedelta(hours=hours),
+        "entry": (f"{subject}_{type_}_{title}", kind),
+    }
 
 
 class FakeClock:
@@ -567,15 +589,17 @@ async def test_the_login_prompt_is_not_recorded_when_telegram_refused(monkeypatc
     assert len(working.sent) == 1, "the refused prompt was not retried"
 
 
-async def test_send_notification_returns_false_and_logs_on_failure(monkeypatch, caplog):
+async def test_send_notification_returns_zero_and_logs_on_failure(monkeypatch, caplog):
     async def boom(**kwargs):
         raise RuntimeError("network down")
 
     monkeypatch.setattr(notifications.bot, "send_message", boom)
 
-    result = await notifications.send_notification("body", "42", 1)
+    result = await notifications.send_notification(
+        [reminder_item("Essay")], "42", 1, now=at_hour(12)
+    )
 
-    assert result is False
+    assert result == 0
     assert "Error sending notification to 42" in caplog.text
 
 
@@ -587,8 +611,12 @@ async def test_send_notification_logs_the_send_without_the_assignment_text(
     bot = FakeBot()
     monkeypatch.setattr(notifications, "bot", bot)
 
-    assert await notifications.send_notification("Secret essay title", "42", 3) is True
+    sent = await notifications.send_notification(
+        [reminder_item("Secret essay title")], "42", 3, now=at_hour(12)
+    )
 
+    assert sent == 1
+    assert "Secret essay title" in bot.sent[0][1]
     assert "Notification sent to 42 (threshold=3h)" in caplog.text
     assert "Secret essay title" not in caplog.text
 
@@ -740,21 +768,7 @@ async def test_a_discussion_is_announced_like_any_other_assignment(monkeypatch):
 
     assert len(bot.sent) == 1
     text = bot.sent[0][1]
-    assert "💬 English" in text
-    assert f"{Strings.get('type_discussions', Language.EN)}: 논문을 읽고 토론" in text
-
-
-def test_format_left_time_keeps_a_zero_hour_under_a_day_count():
-    """Same rule as /show: dropping the 0h reads as an hour less than there is."""
-    assert (
-        notifications.format_left_time(datetime.timedelta(days=1, minutes=58))
-        == "1d 0h 58m"
-    )
-    assert (
-        notifications.format_left_time(datetime.timedelta(hours=3, minutes=20))
-        == "3h 20m"
-    )
-    assert notifications.format_left_time(datetime.timedelta(minutes=45)) == "45m"
+    assert f"\nEnglish\n{NBSP}💬 논문을 읽고 토론" in text
 
 
 async def test_a_rejected_password_asks_for_register_once_without_a_button(monkeypatch):
@@ -770,3 +784,190 @@ async def test_a_rejected_password_asks_for_register_once_without_a_button(monke
     ]
     assert bot.markups == [None]
     assert await _prompt_sent()
+
+
+# --- message format, HTML and chunked delivery --------------------------------
+
+
+def utf16_len(text):
+    return len(text.encode("utf-16-le")) // 2
+
+
+def ids_in(text):
+    """The "T<subject>-<n> " markers many_todo puts at the start of each title."""
+    return set(re.findall(r"T\d\d-\d\d ", text))
+
+
+def many_todo(subjects, per_subject, hours_for):
+    """Long distinct titles, so a batch is certain to need several messages."""
+    return [
+        {
+            "name": f"Subject {s:02d}",
+            "todo": {
+                "homeworks": [
+                    {
+                        "title": f"T{s:02d}-{n:02d} " + "x" * 100,
+                        "expire_at": at_hour(12)
+                        + datetime.timedelta(hours=hours_for(s, n)),
+                    }
+                    for n in range(per_subject)
+                ]
+            },
+        }
+        for s in range(subjects)
+    ]
+
+
+async def _recorded_ids(kind):
+    sent = await get_sent_notifications("1")
+    return {key.split("_homeworks_")[1][:7] for key, kinds in sent.items() if kind in kinds}
+
+
+@pytest.mark.parametrize(
+    "lang, header, in_time",
+    [
+        (Language.EN, "<b>⏰ Less than 3h left</b>", "in 3h 20m"),
+        (Language.KO, "<b>⏰ 마감까지 3시간 미만</b>", "3시간 20분 후"),
+        (Language.RU, "<b>⏰ Осталось менее 3 ч</b>", "через 3ч 20м"),
+    ],
+)
+async def test_reminder_is_localized_compact_and_without_a_footer(
+    monkeypatch, lang, header, in_time
+):
+    bot = FakeBot()
+    monkeypatch.setattr(notifications, "bot", bot)
+    items = [
+        reminder_item("Essay", "Algorithms", hours=3 + 1 / 3),
+        reminder_item("Quiz 2", "Algorithms", "quizzes", hours=1),
+        reminder_item("Lab", "Networks", hours=2),
+    ]
+
+    assert await notifications.send_notification(items, "42", 3, lang, at_hour(12)) == 1
+
+    text = bot.sent[0][1]
+    lines = text.split("\n")
+    assert lines[0] == header
+    # Subject is plain, ordered by earliest deadline, items indented under it.
+    assert lines[1:3] == ["Algorithms", f"{NBSP}🧠 Quiz 2 · " + lines[2].split(" · ")[1]]
+    assert "Networks" in lines and "<b>Algorithms</b>" not in text
+    assert in_time in text
+    assert "🚨" not in text, "the footer is gone"
+    assert lines[-1].startswith(NBSP), "the message ends with an item, not a footer"
+    if lang is Language.RU:
+        assert " h" not in text and "3h" not in text
+
+
+async def test_new_assignments_use_day_grouping_and_their_own_header(monkeypatch):
+    await update_notification_state("1", seeded=True)
+    api = FakeApi(todo_list=make_todo(hours=100) + make_todo("Quiz", hours=30, subject="Networks"))
+    bot = _patch_user_deps(monkeypatch, api)
+
+    await notifications._process_user(FakeUser("1"))
+
+    text = bot.sent[0][1]
+    assert text.startswith("<b>🆕 New in KLAS</b>\n\n<b>Tomorrow</b>\nNetworks\n")
+    assert "<b>Thu, 24 Sep · in 4 days</b>\nAlgorithms\n" in text
+    assert "Tasks" not in text, "the /show header leaked into the announcement"
+    assert "Time remaining" not in text
+
+
+async def test_new_assignments_far_out_go_into_the_later_block(monkeypatch):
+    await update_notification_state("1", seeded=True)
+    api = FakeApi(todo_list=make_todo(title="Project", hours=24 * 12))
+    bot = _patch_user_deps(monkeypatch, api)
+
+    await notifications._process_user(FakeUser("1"))
+
+    text = bot.sent[0][1]
+    assert "<blockquote expandable><b>🗓 Later (1)</b>" in text
+    assert text.endswith("</blockquote>")
+
+
+async def test_titles_are_html_escaped_in_both_kinds_of_message(monkeypatch):
+    await update_notification_state("1", seeded=True)
+    todo = make_todo(title="a < b & <i>c</i>", hours=2.5, subject="R&D <x>")
+    bot = _patch_user_deps(monkeypatch, FakeApi(todo_list=todo))
+
+    await notifications._process_user(FakeUser("1"))
+
+    assert len(bot.sent) == 2, "the announcement and the 3h reminder"
+    for _, text in bot.sent:
+        assert "a &lt; b &amp; &lt;i&gt;c&lt;/i&gt;" in text
+        assert "\nR&amp;D &lt;x&gt;\n" in text
+        assert "<i>" not in text and "<x>" not in text
+
+
+async def test_notifications_are_sent_as_html_but_login_prompts_stay_plain(monkeypatch):
+    await update_notification_state("1", seeded=True)
+    bot = _patch_user_deps(monkeypatch, FakeApi(todo_list=make_todo(hours=2.5)))
+    await notifications._process_user(FakeUser("1"))
+    assert bot.parse_modes == ["HTML", "HTML"]
+
+    await _registered()
+    prompt = _needs_login(monkeypatch)
+    await notifications._process_user(FakeUser("1"))
+    assert prompt.parse_modes == [None], "the login prompt contains a literal '<'"
+
+
+async def test_a_reminder_is_split_and_a_refused_chunk_keeps_only_the_rest_unrecorded(
+    monkeypatch,
+):
+    await _threshold_only_user()
+    api = FakeApi(
+        todo_list=many_todo(12, 8, lambda s, n: 2.01 + (s * 8 + n) / 200)
+    )
+    everything = {f"T{s:02d}-{n:02d} " for s in range(12) for n in range(8)}
+    flaky = FakeBot(fail_on_call=2)
+    _patch_user_deps(monkeypatch, api, bot=flaky)
+
+    assert await notifications._process_user(FakeUser("1")) == (True, 1)
+
+    assert flaky.calls == 2, "sending went on after Telegram refused a chunk"
+    first = ids_in(flaky.sent[0][1])
+    assert first and first < everything
+    assert await _recorded_ids("t3") == first, "recorded something that was not delivered"
+
+    working = _patch_user_deps(monkeypatch, api)
+    _, sent_count = await notifications._process_user(FakeUser("1"))
+
+    assert sent_count == len(working.sent) >= 2
+    retried = set().union(*(ids_in(text) for _, text in working.sent))
+    assert retried == everything - first, "a delivered item was sent again"
+    assert await _recorded_ids("t3") == everything
+    for _, text in flaky.sent + working.sent:
+        assert utf16_len(text) <= 4096
+        assert text.startswith("<b>⏰ Less than 3h left</b>\n")
+
+    assert await notifications._process_user(FakeUser("1")) == (True, 0)
+    assert len(working.sent) == sent_count
+
+
+async def test_new_assignments_are_split_by_day_and_recorded_per_chunk(monkeypatch):
+    await update_notification_state("1", seeded=True)
+    # Two subjects a day for six days; the first message holds the first days.
+    api = FakeApi(todo_list=many_todo(12, 8, lambda s, n: 30 + 24 * (s // 2) + n / 10))
+    everything = {f"T{s:02d}-{n:02d} " for s in range(12) for n in range(8)}
+    flaky = FakeBot(fail_on_call=2)
+    _patch_user_deps(monkeypatch, api, bot=flaky)
+
+    assert await notifications._process_user(FakeUser("1")) == (True, 1)
+
+    assert flaky.calls == 2
+    first = ids_in(flaky.sent[0][1])
+    assert first and first < everything
+    assert await _recorded_ids("new") == first
+    assert flaky.sent[0][1].startswith("<b>🆕 New in KLAS</b>\n\n")
+
+    working = _patch_user_deps(monkeypatch, api)
+    await notifications._process_user(FakeUser("1"))
+
+    assert len(flaky.sent) + len(working.sent) >= 3
+    retried = set().union(*(ids_in(text) for _, text in working.sent))
+    assert retried == everything - first
+    assert await _recorded_ids("new") == everything
+    for _, text in flaky.sent + working.sent:
+        assert utf16_len(text) <= 4096
+    # A day is never cut in half: each header sits in exactly one message.
+    texts = [text for _, text in flaky.sent + working.sent]
+    for day in ("Tomorrow", "Tue, 22 Sep", "Wed, 23 Sep"):
+        assert sum(f"<b>{day}" in text for text in texts) == 1

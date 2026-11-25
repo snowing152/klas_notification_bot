@@ -36,13 +36,13 @@ One cycle, per user (`_process_user`):
    category KLAS refused ([KLAS.md](KLAS.md#the-client)): the cycle goes on with what was
    read, except for a user not seeded yet, who is left for the next cycle as a failed
    one — seeding from part of the picture would announce the rest as new.
-4. `_collect_messages` builds what is due against a single `timezone.now()`
-   ([TIMEZONE.md](TIMEZONE.md)): one "new" body per assignment not yet announced, and for
+4. `_collect_messages` picks what is due against a single `timezone.now()`
+   ([TIMEZONE.md](TIMEZONE.md)): one "new" item per assignment not yet announced, and for
    each assignment **only the tightest threshold its deadline still fits in**. At 2h30m
    left that is the 3h alert; the 6/12/24h ones are past, not pending. Assignments
    already past their deadline are skipped even though KLAS still lists them.
-5. Send, one message per kind — new assignments first, then one per threshold — with
-   `SEND_DELAY_SECONDS = 1` between them.
+5. Render and send, one message per kind (more when it does not fit, see below) — new
+   assignments first, then one per threshold — with `SEND_DELAY_SECONDS = 1` between them.
 6. Prune `sent_notifications` rows for assignments KLAS no longer lists — unless the
    read was incomplete, when a missing assignment may only be one KLAS did not answer
    about. The log then has `Kept the notification history of <user id> as it is`.
@@ -61,6 +61,28 @@ the user and the kind, deliberately never the assignment text. Quiet hours log
 `Notification held for <user id> (threshold=6h, quiet hours)` once when a hold begins,
 and `Held notification for <user id> (threshold=6h) dropped unsent: no longer due` if it
 ends without a message.
+
+## Message format and chunking
+
+Items are plain dicts (`type`, `subject`, `title`, `expire_at`, plus `entry`, the
+`(assignment_key, kind)` pair to record) and are rendered by `app/utils/assignment_render.py`
+as Telegram HTML, sent with `parse_mode="HTML"` per message. KLAS values are escaped there.
+
+- **New in KLAS** - the `/show` layout (day, subject, items, a "Later" block for deadlines
+  a week or more away) under the bold `new_assignments_header`
+  (`render_assignment_chunks(..., header_key=...)`).
+- **Deadline reminder** - one bold `reminder_header` (urgency emoji from `TIME_THRESHOLDS`,
+  the threshold in hours), then subject, then items, each with the exact time left. No day
+  headers, no footer: everything in it is due within 24 hours (`render_reminder_chunks`).
+
+A message over 4096 UTF-16 units is split - new assignments at day boundaries, reminders at
+subject boundaries, a single day or subject larger than a message at item lines. Each chunk
+repeats the reminder header (or the day header) and comes with the items it carries.
+`_deliver` sends the chunks in order and calls `_record_sent` for a chunk's entries right
+after Telegram accepted it; the first refusal stops the rest. What was not sent stays
+unrecorded, so the next cycle selects only those items again: nothing is announced twice,
+and nothing is recorded that was not delivered. Before this, one oversized message was
+refused by Telegram on every cycle, for ever.
 
 ## Thresholds
 
@@ -99,7 +121,7 @@ The schema of these tables, and how to change it for existing users, is in
 
 Rules that follow from this, and that a change here has to keep:
 
-- A row is written (`_record_sent`) only after `_send` returned `True`. If the write
+- A row is written (`_record_sent`) only after `_send` returned `True`, per chunk. If the write
   itself fails, the entries stay in `_unrecorded` and count as sent — the message is
   already in the chat.
 - `get_sent_notifications` returns `None`, not `{}`, when the database cannot be read:

@@ -31,8 +31,8 @@ def test_missing_key_does_not_raise():
 
 
 def test_missing_format_argument_does_not_raise():
-    # "time_left" expects {time_str}; omitting it returns the raw template
-    assert "{time_str}" in Strings.get("time_left", Language.EN)
+    # "show_in_time" expects {time_str}; omitting it returns the raw template
+    assert "{time_str}" in Strings.get("show_in_time", Language.EN)
 
 
 # Deliberately English-only: test_string_fallback above needs a key that is
@@ -103,7 +103,8 @@ def test_placeholders_match_across_languages():
 
 def test_notification_strings_present_in_every_language():
     for lang in Language:
-        assert Strings.get("notification_footer", lang)
-        assert "{" not in Strings.get(
-            "notification_header", lang, emoji="⏰", hours=3
-        )
+        header = Strings.get("reminder_header", lang, emoji="⏰", hours=3)
+        assert "{" not in header
+        # Sent as HTML: a raw "<" or "&" in a template would be parsed as markup.
+        assert not set("<>&") & set(header)
+        assert Strings.get("new_assignments_header", lang) != "new_assignments_header"
