@@ -1,8 +1,32 @@
 import logging
 import asyncio
+import ssl
+from functools import lru_cache
+from pathlib import Path
+
 import aiohttp
 
 from bs4 import BeautifulSoup
+
+# kupis.kw.ac.kr sends only its own certificate, without the Sectigo
+# intermediate that links it to a trusted root. Browsers fetch the missing
+# intermediate themselves (AIA); Python does not, so verification fails with
+# "unable to get local issuer certificate". The public intermediate is shipped
+# here and added to the normal trust store - verification stays on, which the
+# old fix (turning it off) did not. Valid until 2036-03-21.
+_LIBRARY_INTERMEDIATE = (
+    Path(__file__).resolve().parents[1]
+    / "certs"
+    / "sectigo_public_server_auth_ca_ov_r36.pem"
+)
+
+
+@lru_cache(maxsize=1)
+def library_ssl_context() -> ssl.SSLContext:
+    """Default verifying TLS context plus the intermediate kupis does not send."""
+    context = ssl.create_default_context()
+    context.load_verify_locations(cafile=str(_LIBRARY_INTERMEDIATE))
+    return context
 
 
 async def fetch_books(query: str):
@@ -20,7 +44,8 @@ async def fetch_books(query: str):
     list_of_books = []
 
     async with aiohttp.ClientSession(
-        timeout=aiohttp.ClientTimeout(total=30)
+        timeout=aiohttp.ClientTimeout(total=30),
+        connector=aiohttp.TCPConnector(ssl=library_ssl_context()),
     ) as session:
         async with session.get(url, params=params) as response:
             if response.status == 200:

@@ -116,7 +116,12 @@ factor, so it is never logged either. Only cookies for `klas.kw.ac.kr` are store
   their last step and use it from the message itself.
 - **HTTP calls have a timeout and verify TLS.** Every `aiohttp` session sets
   `ClientTimeout(total=30)`; no call passes `ssl=False` or a context that skips
-  verification. `app/services/qr.py` opens a session per request (`new_session()`), so
+  verification. `kupis.kw.ac.kr` (book search) sends no intermediate certificate, so
+  `app/services/library.py` adds the public Sectigo intermediate shipped in
+  `app/certs/` to the default trust store (`library_ssl_context()`); it expires
+  2036-03-21, and a "unable to get local issuer certificate" error in book search means
+  the site changed its CA and the file needs replacing from the certificate's AIA URL.
+  `app/services/qr.py` opens a session per request (`new_session()`), so
   cookies of different users never share a jar.
 - **"Delete my data" means all of it.** `auth.delete_all_user_data` is the one place; a
   new table, file or cache holding something per user is added there in the same change
