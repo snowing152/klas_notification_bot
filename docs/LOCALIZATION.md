@@ -39,6 +39,12 @@ Each assignment category also needs a `type_<name>` string in all three language
 from KLAS are escaped in `app/utils/assignment_render.py`. Weekday and month names are one
 key each, so a language can order the day header naturally (`show_day_date`).
 
+The notifications are HTML too: `reminder_header` (`{emoji}`, `{hours}`) and
+`new_assignments_header` are plain titles with no markup of their own - the renderer wraps
+them in `<b>` - and `_send(..., parse_mode="HTML")` is passed only for those two kinds of
+message. The login prompts go through the same `_send` as plain text, since
+`klas_login_required` and `credentials_expired` may contain a literal `<`.
+
 ## Resolving the user's language
 
 `get_user_language_with_fallback()`

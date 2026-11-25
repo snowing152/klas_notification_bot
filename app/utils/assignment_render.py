@@ -81,22 +81,31 @@ def _type_rank(item: dict) -> int:
         return len(TYPE_ORDER)
 
 
+def _sort_items(items: list[dict]) -> list[dict]:
+    return sorted(items, key=lambda item: (item["expire_at"], _type_rank(item)))
+
+
+def _group_subjects(ordered: list[dict]) -> Subjects:
+    """Subjects in order of their earliest item; `ordered` is already sorted."""
+    by_subject: dict[str, list[dict]] = {}
+    # A subject's first item is its earliest, and dict insertion order gives
+    # the subject order.
+    for item in ordered:
+        by_subject.setdefault(item["subject"], []).append(item)
+    return list(by_subject.items())
+
+
 def group_items(items: list[dict]) -> list[tuple[datetime.date, Subjects]]:
     """Group items into days (ascending), each holding subjects ordered by their
     earliest deadline, each holding items ordered by deadline then type.
 
     The day is the calendar date of `expire_at`, which is already Seoul time.
     """
-    ordered = sorted(items, key=lambda item: (item["expire_at"], _type_rank(item)))
-    days = []
-    for day, day_items in groupby(ordered, key=lambda item: item["expire_at"].date()):
-        by_subject: dict[str, list[dict]] = {}
-        # day_items is already in deadline order, so a subject's first item is
-        # its earliest and dict insertion order gives the subject order.
-        for item in day_items:
-            by_subject.setdefault(item["subject"], []).append(item)
-        days.append((day, list(by_subject.items())))
-    return days
+    ordered = _sort_items(items)
+    return [
+        (day, _group_subjects(list(day_items)))
+        for day, day_items in groupby(ordered, key=lambda item: item["expire_at"].date())
+    ]
 
 
 def render_item(item: dict, user_lang, now: datetime.datetime) -> str:
@@ -158,20 +167,57 @@ def render_day_group(
     return "\n".join(blocks)
 
 
-def _pack(units: list[str], separator: str, limit: int) -> list[str]:
-    """Greedily join units into strings of at most `limit` characters."""
-    packed: list[str] = []
-    current = ""
-    for unit in units:
-        candidate = f"{current}{separator}{unit}" if current else unit
-        if _tg_len(candidate) > limit and current:
-            packed.append(current)
-            current = unit
+# A message chunk and the items it carries. Callers that must know what was
+# delivered (notifications) record exactly these once Telegram accepted the text.
+Chunk = tuple[str, list[dict]]
+
+
+def _pack(pieces: list[Chunk], separator: str, limit: int) -> list[Chunk]:
+    """Greedily join pieces into chunks of at most `limit` UTF-16 units."""
+    packed: list[Chunk] = []
+    text = ""
+    items: list[dict] = []
+    for piece_text, piece_items in pieces:
+        candidate = f"{text}{separator}{piece_text}" if text else piece_text
+        if _tg_len(candidate) > limit and text:
+            packed.append((text, items))
+            text, items = piece_text, list(piece_items)
         else:
-            current = candidate
-    if current:
-        packed.append(current)
+            text = candidate
+            items = items + piece_items
+    if text:
+        packed.append((text, items))
     return packed
+
+
+def _pieces_under_header(
+    header: str,
+    subjects: Subjects,
+    user_lang,
+    now: datetime.datetime,
+    limit: int,
+) -> list[Chunk]:
+    """`header` followed by subject blocks, split at subject boundaries and, for
+    a subject larger than a message, at item lines. Every piece repeats the
+    header (and the subject line, for item-level splits) so it stands alone and
+    its tags stay balanced."""
+    units: list[Chunk] = []
+    for subject, items in subjects:
+        block = render_subject(subject, items, user_lang, now)
+        if _tg_len(header) + 1 + _tg_len(block) <= limit:
+            units.append((block, items))
+            continue
+        subject_line = html.escape(subject, quote=False)
+        lines = [(render_item(item, user_lang, now), [item]) for item in items]
+        room = limit - _tg_len(header) - 1 - _tg_len(subject_line) - 1
+        units.extend(
+            (f"{subject_line}\n{text}", chunk_items)
+            for text, chunk_items in _pack(lines, "\n", room)
+        )
+    body_limit = limit - _tg_len(header) - 1
+    return [
+        (f"{header}\n{text}", items) for text, items in _pack(units, "\n", body_limit)
+    ]
 
 
 def _day_pieces(
@@ -180,48 +226,56 @@ def _day_pieces(
     user_lang,
     now: datetime.datetime,
     limit: int,
-) -> list[str]:
-    """The day as one string, or - only when it alone exceeds `limit` - several,
-    split at subject boundaries and then at item lines. Every piece repeats the
-    day header (and the subject line, for item-level splits) so it stands alone
-    and its tags stay balanced."""
+) -> list[Chunk]:
+    """The day as one piece, or - only when it alone exceeds `limit` - several."""
     whole = render_day_group(day, subjects, user_lang, now)
     if _tg_len(whole) <= limit:
-        return [whole]
-
+        return [(whole, [item for _, items in subjects for item in items])]
     header = render_day_header(day, user_lang, now)
-    units: list[str] = []
-    for subject, items in subjects:
-        block = render_subject(subject, items, user_lang, now)
-        if _tg_len(header) + 1 + _tg_len(block) <= limit:
-            units.append(block)
-            continue
-        subject_line = html.escape(subject, quote=False)
-        lines = [render_item(item, user_lang, now) for item in items]
-        units.extend(
-            f"{subject_line}\n{chunk}"
-            for chunk in _pack(lines, "\n", limit - _tg_len(header) - 1 - _tg_len(subject_line) - 1)
-        )
-    return [f"{header}\n{piece}" for piece in _pack(units, "\n", limit - _tg_len(header) - 1)]
+    return _pieces_under_header(header, subjects, user_lang, now, limit)
 
 
-def render_assignments(
+def _bold(text: str) -> str:
+    return f"<b>{html.escape(text, quote=False)}</b>"
+
+
+def render_reminder_chunks(
+    items: list[dict],
+    header_text: str,
+    user_lang,
+    now: datetime.datetime,
+    limit: int = MESSAGE_LIMIT,
+) -> list[Chunk]:
+    """A deadline reminder: bold header, then subject -> items, no day headers
+    (everything in it is due within the next day anyway).
+
+    Split only at subject boundaries (a subject larger than `limit` is the one
+    exception). Every chunk repeats the header and comes with the items it
+    carries, so a caller can record exactly what each accepted chunk delivered.
+    """
+    subjects = _group_subjects(_sort_items(items))
+    return _pieces_under_header(_bold(header_text), subjects, user_lang, now, limit)
+
+
+def render_assignment_chunks(
     items: list[dict],
     user_lang,
     now: datetime.datetime,
     limit: int = MESSAGE_LIMIT,
-) -> list[str]:
-    """HTML message chunks for a list of items, each at most `limit` characters.
+    header_key: str = "show_header",
+) -> list[Chunk]:
+    """Day -> subject -> items as (html, items in that chunk) pairs, each text at
+    most `limit` UTF-16 units. `header_key` names the localized bold title.
 
     Splits only at day boundaries (a day larger than `limit` is the one
     exception). Days before today + HORIZON_DAYS are open; the rest sit in one
     expandable blockquote at the end, which is never split unless it alone
-    exceeds `limit`.
+    exceeds `limit`. The chunks' items together are exactly `items`.
     """
     if not items:
-        return [Strings.get("no_assignments", user_lang)]
+        return [(Strings.get("no_assignments", user_lang), [])]
 
-    header = f"<b>{html.escape(Strings.get('show_header', user_lang), quote=False)}</b>"
+    header = _bold(Strings.get(header_key, user_lang))
     horizon = now.date() + datetime.timedelta(days=HORIZON_DAYS)
     days = group_items(items)
     open_days = [(d, s) for d, s in days if d < horizon]
@@ -230,35 +284,52 @@ def render_assignments(
     # Room for the header even in the first chunk, so an oversized day split
     # never produces a piece that cannot sit next to it.
     day_limit = limit - _tg_len(header) - _tg_len(DAY_SEPARATOR)
-    units: list[str] = []
+    units: list[Chunk] = []
     for day, subjects in open_days:
         units.extend(_day_pieces(day, subjects, user_lang, now, day_limit))
 
     if later_days:
         count = sum(len(i) for _, subjects in later_days for _, i in subjects)
-        title = (
-            f"<b>{html.escape(Strings.get('show_later', user_lang, count=count), quote=False)}</b>"
-        )
+        title = _bold(Strings.get("show_later", user_lang, count=count))
         wrapper = _tg_len(_BLOCKQUOTE_OPEN) + _tg_len(_BLOCKQUOTE_CLOSE)
         inner_limit = day_limit - wrapper - _tg_len(title) - _tg_len(DAY_SEPARATOR)
-        later_units: list[str] = []
+        later_units: list[Chunk] = []
         for day, subjects in later_days:
             later_units.extend(_day_pieces(day, subjects, user_lang, now, inner_limit))
         bodies = _pack(later_units, DAY_SEPARATOR, inner_limit)
         # The title is only on the first blockquote; later ones exist solely
         # when the block alone is over the limit.
-        for index, body in enumerate(bodies):
+        for index, (body, body_items) in enumerate(bodies):
             prefix = f"{title}{DAY_SEPARATOR}" if index == 0 else ""
-            units.append(f"{_BLOCKQUOTE_OPEN}{prefix}{body}{_BLOCKQUOTE_CLOSE}")
+            units.append(
+                (f"{_BLOCKQUOTE_OPEN}{prefix}{body}{_BLOCKQUOTE_CLOSE}", body_items)
+            )
 
-    chunks: list[str] = []
+    chunks: list[Chunk] = []
     current = header
-    for unit in units:
-        candidate = f"{current}{DAY_SEPARATOR}{unit}"
+    current_items: list[dict] = []
+    for text, unit_items in units:
+        candidate = f"{current}{DAY_SEPARATOR}{text}"
         if _tg_len(candidate) > limit:
-            chunks.append(current)
-            current = unit
+            chunks.append((current, current_items))
+            current, current_items = text, list(unit_items)
         else:
             current = candidate
-    chunks.append(current)
+            current_items = current_items + unit_items
+    chunks.append((current, current_items))
     return chunks
+
+
+def render_assignments(
+    items: list[dict],
+    user_lang,
+    now: datetime.datetime,
+    limit: int = MESSAGE_LIMIT,
+    header_key: str = "show_header",
+) -> list[str]:
+    """HTML message chunks for a list of items, each at most `limit` UTF-16 units.
+
+    The text-only view of `render_assignment_chunks`, which `/show` uses.
+    """
+    chunks = render_assignment_chunks(items, user_lang, now, limit, header_key)
+    return [text for text, _ in chunks]
