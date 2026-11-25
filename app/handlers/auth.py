@@ -34,7 +34,6 @@ from app.services.klas_session import clear_password_rejected, mark_password_rej
 from app.utils.language_utils import get_user_language_with_fallback
 from app.handlers.student_info import student_photo_path
 from app.handlers.todos import forget_cached_items
-from app.services.notifications import forget_user as forget_notifications
 
 
 # Define states for registration
@@ -237,6 +236,16 @@ async def process_klas_relogin(callback_query: types.CallbackQuery):
             f"Error in process_klas_relogin: {type(e).__name__}: {e}", exc_info=True
         )
         await callback_query.message.answer(Strings.get("unexpected_error", user_lang))
+
+
+def forget_notifications(user_id: str) -> None:
+    """Drop the notification service's in-memory state for this user."""
+    # Imported on use: the notification service imports `bot` from app.bot,
+    # and app.bot imports this module for the registration states, so a
+    # module-level import here closes an import cycle.
+    from app.services.notifications import forget_user
+
+    forget_user(user_id)
 
 
 async def delete_all_user_data(user_id: str) -> bool:
