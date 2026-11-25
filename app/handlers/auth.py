@@ -8,6 +8,7 @@ from app.utils.encryption import decrypt_password, encrypt_password
 from app.services.qr import (
     library_login,
     get_secret_key,
+    new_session,
     LibraryLoginError,
     LibraryLoginRejected,
 )
@@ -308,9 +309,13 @@ async def process_library_password(message: types.Message, state: FSMContext):
         user_id = str(message.from_user.id)
 
         encrypted_password = encrypt_password(password)
-        secret = await get_secret_key("0" + username)
         try:
-            auth_key = await library_login(username, phone_number, password, secret)
+            # One session for both calls, as before, but private to this user.
+            async with new_session() as session:
+                secret = await get_secret_key("0" + username, session=session)
+                auth_key = await library_login(
+                    username, phone_number, password, secret, session=session
+                )
         except LibraryLoginRejected as e:
             # result_code=1 is KLAS's "this isn't the phone number registered
             # to this library account" - common enough (registered phone

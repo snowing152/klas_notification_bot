@@ -1,7 +1,6 @@
 import logging
 import asyncio
 import aiohttp
-import ssl
 
 from bs4 import BeautifulSoup
 
@@ -20,13 +19,10 @@ async def fetch_books(query: str):
     base_url = "https://kupis.kw.ac.kr"
     list_of_books = []
 
-    # Create a context that doesn't verify SSL
-    ssl_context = ssl.create_default_context()
-    ssl_context.check_hostname = False
-    ssl_context.verify_mode = ssl.CERT_NONE
-
-    async with aiohttp.ClientSession() as session:
-        async with session.get(url, params=params, ssl=ssl_context) as response:
+    async with aiohttp.ClientSession(
+        timeout=aiohttp.ClientTimeout(total=30)
+    ) as session:
+        async with session.get(url, params=params) as response:
             if response.status == 200:
                 beautiful_soup = BeautifulSoup(await response.text(), "html.parser")
                 table_scroll_box = beautiful_soup.find(
@@ -60,9 +56,7 @@ async def fetch_books(query: str):
                             )
 
                             # Get ISBN from detail page
-                            async with session.get(
-                                detail_url, ssl=ssl_context
-                            ) as detail_response:
+                            async with session.get(detail_url) as detail_response:
                                 if detail_response.status == 200:
                                     detail_soup = BeautifulSoup(
                                         await detail_response.text(), "html.parser"
@@ -138,7 +132,6 @@ async def fetch_books(query: str):
                                     async with session.post(
                                         thumbnail_url,
                                         data=thumbnail_data,
-                                        ssl=ssl_context,
                                     ) as thumb_response:
                                         if thumb_response.status == 200:
                                             image_data = await thumb_response.json()

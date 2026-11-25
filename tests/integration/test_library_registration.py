@@ -35,10 +35,10 @@ async def test_wrong_phone_number_gets_a_specific_reason(monkeypatch):
     """Regression: a rejected library login used to show the same generic
     'check your details' message no matter why it failed."""
 
-    async def fake_get_secret_key(real_id):
+    async def fake_get_secret_key(real_id, session=None):
         return "sixteencharkeyxx"
 
-    async def fake_library_login(std_number, phone, password, secret):
+    async def fake_library_login(std_number, phone, password, secret, session=None):
         raise qr_service.LibraryLoginRejected("1", "not the registered phone")
 
     monkeypatch.setattr(auth_handlers, "get_secret_key", fake_get_secret_key)
@@ -57,10 +57,10 @@ async def test_wrong_phone_number_gets_a_specific_reason(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_other_rejection_reasons_keep_the_generic_message(monkeypatch):
-    async def fake_get_secret_key(real_id):
+    async def fake_get_secret_key(real_id, session=None):
         return "sixteencharkeyxx"
 
-    async def fake_library_login(std_number, phone, password, secret):
+    async def fake_library_login(std_number, phone, password, secret, session=None):
         raise qr_service.LibraryLoginRejected("9", "some other reason")
 
     monkeypatch.setattr(auth_handlers, "get_secret_key", fake_get_secret_key)
@@ -78,10 +78,10 @@ async def test_other_rejection_reasons_keep_the_generic_message(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_transport_failure_shows_the_generic_message(monkeypatch):
-    async def fake_get_secret_key(real_id):
+    async def fake_get_secret_key(real_id, session=None):
         return "sixteencharkeyxx"
 
-    async def fake_library_login(std_number, phone, password, secret):
+    async def fake_library_login(std_number, phone, password, secret, session=None):
         raise qr_service.LibraryLoginError("http_status:503")
 
     monkeypatch.setattr(auth_handlers, "get_secret_key", fake_get_secret_key)
@@ -99,10 +99,10 @@ async def test_transport_failure_shows_the_generic_message(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_successful_login_still_saves_and_confirms(monkeypatch):
-    async def fake_get_secret_key(real_id):
+    async def fake_get_secret_key(real_id, session=None):
         return "sixteencharkeyxx"
 
-    async def fake_library_login(std_number, phone, password, secret):
+    async def fake_library_login(std_number, phone, password, secret, session=None):
         return "auth-key"
 
     monkeypatch.setattr(auth_handlers, "get_secret_key", fake_get_secret_key)
@@ -153,10 +153,10 @@ async def test_phone_step_asks_for_the_password_and_never_stores_one():
 
 @pytest.mark.asyncio
 async def test_password_step_deletes_the_message_and_clears_the_state(monkeypatch):
-    async def fake_get_secret_key(real_id):
+    async def fake_get_secret_key(real_id, session=None):
         return "sixteencharkeyxx"
 
-    async def fake_library_login(std_number, phone, password, secret):
+    async def fake_library_login(std_number, phone, password, secret, session=None):
         assert (std_number, phone, password) == ("2021123456", "01099999999", "pw")
         return "auth-key"
 

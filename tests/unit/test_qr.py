@@ -37,25 +37,28 @@ class FakeQrSession:
         self.post_calls += 1
         return self._response
 
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        return False
+
 
 def _stub_get_session(monkeypatch, session):
-    async def fake_get_session():
-        return session
-
-    monkeypatch.setattr(qr_service, "get_session", fake_get_session)
+    monkeypatch.setattr(qr_service, "new_session", lambda: session)
 
 
 @pytest.fixture
 def fake_qr_backend(monkeypatch):
     """Stub out the mobileid.kw.ac.kr calls so only local behavior is exercised."""
 
-    async def fake_get_secret_key(real_id):
+    async def fake_get_secret_key(real_id, session=None):
         return "sixteencharkeyxx"
 
-    async def fake_library_login(std_number, phone, password, secret):
+    async def fake_library_login(std_number, phone, password, secret, session=None):
         return f"auth-{std_number}"
 
-    async def fake_get_qr_code(real_id, auth_key):
+    async def fake_get_qr_code(real_id, auth_key, session=None):
         return {"qr_code": f"payload-for-{real_id}"}
 
     monkeypatch.setattr(qr_service, "get_secret_key", fake_get_secret_key)
@@ -92,7 +95,7 @@ async def test_concurrent_requests_do_not_share_a_file(tmp_path, fake_qr_backend
 
 @pytest.mark.asyncio
 async def test_get_qr_returns_none_on_failure(tmp_path, monkeypatch):
-    async def boom(real_id):
+    async def boom(real_id, session=None):
         raise RuntimeError("network down")
 
     monkeypatch.setattr(qr_service, "get_secret_key", boom)
@@ -173,10 +176,10 @@ async def test_get_qr_returns_none_when_login_is_rejected(tmp_path, monkeypatch)
     """get_qr's blanket except still needs to catch the new exception type,
     not just plain RuntimeError, so a rejected login doesn't crash a cycle."""
 
-    async def fake_get_secret_key(real_id):
+    async def fake_get_secret_key(real_id, session=None):
         return "k"
 
-    async def rejected(std_number, phone, password, secret):
+    async def rejected(std_number, phone, password, secret, session=None):
         raise qr_service.LibraryLoginRejected("1", "wrong phone number")
 
     monkeypatch.setattr(qr_service, "get_secret_key", fake_get_secret_key)
@@ -186,20 +189,60 @@ async def test_get_qr_returns_none_when_login_is_rejected(tmp_path, monkeypatch)
 
 
 @pytest.mark.asyncio
-async def test_get_qr_code_uses_the_shared_session(monkeypatch):
-    """Regression: get_qr_code used to open its own throwaway ClientSession
-    instead of the module-level one main.py closes on shutdown."""
+async def test_get_qr_code_uses_the_session_it_is_given(monkeypatch):
     session = FakeQrSession(
         FakeQrResponse(status=200, text="<root><qr_code><![CDATA[abc]]></qr_code></root>")
     )
-    _stub_get_session(monkeypatch, session)
 
-    def must_not_be_called(*args, **kwargs):
+    def must_not_be_called():
         raise AssertionError("get_qr_code must not open its own ClientSession")
 
-    monkeypatch.setattr(qr_service, "ClientSession", must_not_be_called)
+    monkeypatch.setattr(qr_service, "new_session", must_not_be_called)
 
-    result = await qr_service.get_qr_code("002021123456", "authkey")
+    result = await qr_service.get_qr_code("002021123456", "authkey", session=session)
 
     assert result["qr_code"] == "abc"
     assert session.post_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_each_get_qr_call_gets_its_own_session(tmp_path, monkeypatch):
+    """Users must never share a cookie jar."""
+    opened = []
+
+    class Session:
+        async def __aenter__(self):
+            opened.append(self)
+            return self
+
+        async def __aexit__(self, *exc):
+            return False
+
+    async def fake_get_secret_key(real_id, session=None):
+        return "k"
+
+    async def fake_library_login(std_number, phone, password, secret, session=None):
+        return "auth"
+
+    async def fake_get_qr_code(real_id, auth_key, session=None):
+        return {"qr_code": "payload"}
+
+    monkeypatch.setattr(qr_service, "new_session", Session)
+    monkeypatch.setattr(qr_service, "get_secret_key", fake_get_secret_key)
+    monkeypatch.setattr(qr_service, "library_login", fake_library_login)
+    monkeypatch.setattr(qr_service, "get_qr_code", fake_get_qr_code)
+
+    await qr_service.get_qr("1111", "010", "pw", str(tmp_path / "a.png"))
+    await qr_service.get_qr("2222", "010", "pw", str(tmp_path / "b.png"))
+
+    assert len(opened) == 2 and opened[0] is not opened[1]
+
+
+def test_new_session_has_a_timeout():
+    import asyncio as _asyncio
+
+    async def check():
+        async with qr_service.new_session() as session:
+            return session.timeout.total
+
+    assert _asyncio.run(check()) == 30

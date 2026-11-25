@@ -33,7 +33,7 @@ async def fetch_weekly_menu() -> bool:
     it, forever.
     """
     url = "https://www.kw.ac.kr/ko/life/facility11.jsp"
-    async with aiohttp.ClientSession() as session:
+    async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30)) as session:
         async with session.get(url) as response:
             beautiful_soup = BeautifulSoup(await response.text(), "html.parser")
             table_scroll_box = beautiful_soup.find("div", {"class": "table-scroll-box"})
