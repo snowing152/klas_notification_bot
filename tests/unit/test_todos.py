@@ -378,25 +378,6 @@ async def test_discussions_show_up_and_filter_as_assignments():
     assert "Week 3" not in text
 
 
-def test_a_whole_number_of_days_still_prints_its_zero_hours():
-    """"1d 0h 58m" must not collapse into "1d 58m" - read literally, that is a
-    deadline an hour earlier than KLAS actually gives."""
-    left = datetime.timedelta(days=1, minutes=58)
-
-    assert todos._format_time_left(left, Language.EN) == "1d 0h 58m"
-
-
-def test_shorter_spans_drop_the_units_above_them():
-    assert (
-        todos._format_time_left(
-            datetime.timedelta(hours=3, minutes=20), Language.EN
-        )
-        == "3h 20m"
-    )
-    assert todos._format_time_left(datetime.timedelta(minutes=45), Language.EN) == "45m"
-    assert todos._format_time_left(datetime.timedelta(seconds=-30), Language.EN) == "0m"
-
-
 @pytest.mark.asyncio
 async def test_a_cached_list_keeps_counting_down(monkeypatch):
     """The cache holds deadlines, not a countdown frozen at fetch time: a
@@ -407,7 +388,7 @@ async def test_a_cached_list_keeps_counting_down(monkeypatch):
     todo_list = [
         make_subject(
             "컴퓨터그래픽스",
-            [("homeworks", "P02 Primitives and Keyboard", 25)],
+            [("homeworks", "P02 Primitives and Keyboard", 2)],
             now=datetime.datetime(2026, 9, 20, 22, 59),
         )
     ]
@@ -422,8 +403,8 @@ async def test_a_cached_list_keeps_counting_down(monkeypatch):
         await show_all_assignments(second)
 
     assert api.calls["todo"] == 1, "the second /show should come from the cache"
-    assert "1d 0h 58m" in first.answer.call_args[0][0]
-    assert "1d 0h 53m" in second.answer.call_args[0][0]
+    assert "in 1h 58m" in first.answer.call_args[0][0]
+    assert "in 1h 53m" in second.answer.call_args[0][0]
 
 
 @pytest.mark.asyncio
@@ -476,3 +457,26 @@ async def test_filter_tap_with_a_rejected_password_says_to_register_again():
         Strings.get("credentials_expired", Language.EN)
     )
     callback.message.edit_text.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_lists_are_sent_as_html_and_filters_share_one_row():
+    await _register("719")
+    todo_list = [
+        make_subject(
+            "Algorithms", [("lectures", "Week 3", 10), ("homeworks", "a < b", 5)]
+        )
+    ]
+    api = FakeApi(todo_list=todo_list)
+
+    with patch_session(api):
+        message = make_message(user_id="719")
+        await show_all_assignments(message)
+        callback = make_callback("show_lectures", user_id="719")
+        await process_show_filter_callback(callback)
+
+    assert message.answer.call_args.kwargs["parse_mode"] == "HTML"
+    assert "a &lt; b" in message.answer.call_args[0][0]
+    assert callback.message.edit_text.call_args.kwargs["parse_mode"] == "HTML"
+    rows = message.answer.call_args.kwargs["reply_markup"].inline_keyboard
+    assert len(rows) == 1 and len(rows[0]) == 2

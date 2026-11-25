@@ -118,7 +118,9 @@ def create_show_filter_keyboard(user_lang: Language, current: str):
             text=Strings.get("show_filter_assignments", user_lang),
             callback_data="show_assignments",
         )
-    builder.adjust(1)
+    # At most three buttons, so adjust(3) keeps them on one row: the labels are
+    # short, and stacked buttons would take more screen than the list itself.
+    builder.adjust(3)
 
     return builder.as_markup()
 

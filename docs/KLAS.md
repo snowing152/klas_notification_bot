@@ -165,7 +165,7 @@ built, so the requests in `get_student_photo` have to run back to back.
 
 `get_todo_list()` reads five per subject — lectures,
 homeworks, team projects, quizzes and 토론 (`discussions`) — and a category only reaches
-the user if it appears in *both* `TYPE_EMOJIS` dicts: `app/handlers/todos.py`'s drives
+the user if it appears in *both* `TYPE_EMOJIS` dicts: `app/utils/assignment_render.py`'s drives
 `/show`, `app/services/notifications.py`'s decides what `_collect_messages` even looks at,
 and `ASSIGNMENT_TYPES` in the handler decides which side of the lectures/assignments
 filter it falls on. Each also needs a `type_<name>` string in all three languages.
@@ -184,7 +184,7 @@ Adding a category therefore touches, in order:
 
 1. a `_get_<name>` request and a `_get_not_done_<name>_info` parser in `kw.py`, and the
    list of fetches and the returned dict in `_get_subject_todo()`;
-2. `TYPE_EMOJIS` in `app/handlers/todos.py`, and `ASSIGNMENT_TYPES` there unless it is
+2. `TYPE_EMOJIS` (and `TYPE_ORDER`, the tie-break order) in `app/utils/assignment_render.py`, and `ASSIGNMENT_TYPES` in `app/handlers/todos.py` unless it is
    something to watch rather than submit;
 3. `TYPE_EMOJIS` in `app/services/notifications.py`;
 4. `type_<name>` in EN, KO and RU ([LOCALIZATION.md](LOCALIZATION.md));
