@@ -195,6 +195,22 @@ Adding a category therefore touches, in order:
    something to watch rather than submit;
 3. tests in `tests/unit/test_kw.py`, fed with a captured response.
 
+## The cafeteria menu page
+
+`app/services/food.py` scrapes `https://www.kw.ac.kr/ko/life/facility11.jsp` (not KLAS,
+but the same "unofficial page" rules apply). Format confirmed on 2026-11-25: inside
+`div.table-scroll-box > table.tbl-list` the header has one `<span class="nowDate">`
+per weekday holding an ISO date (`2026-11-23`, Monday first), and an
+`<h4>조회기간 : 2026-11-23 ~ 2026-11-27</h4>` sits above the table. The page does not
+switch week at midnight: on Sunday it still shows the current week.
+
+So the cache is marked with the week of the first `nowDate`, not with the week asked
+for. A request for a week the page does not show gets the localized
+`menu_not_published` text, and the page is scraped again at most once per hour for that
+week (60 seconds after a failed scrape). If the date cannot be read the cache is left
+unmarked and the same "not published" text is shown, with a warning in the log:
+guessing today's week would serve an old menu as the new one.
+
 ## When KLAS changes
 
 How it shows up: `Failed to retrieve <url>. Status code: ...` or

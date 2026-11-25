@@ -23,8 +23,15 @@ _cached_week = None
 # time. On Sunday "tomorrow" is next week's Monday while the page still shows
 # this week; without the pause every such request would re-scrape.
 RECHECK_SECONDS = 3600
-# target (year, week) -> time.monotonic() of the last scrape that missed it.
-_missed_at: dict[tuple[int, int], float] = {}
+# A failed scrape (site down) is retried sooner: it says nothing about whether
+# the menu exists, and an hour of "No data" for a blip is too long. It still
+# stops every request from queueing on the lock and scraping a dead site.
+FAILURE_RECHECK_SECONDS = 60
+# target (year, week) -> time.monotonic() before which no new scrape is made.
+_retry_at: dict[tuple[int, int], float] = {}
+# True when the last scrape worked but its page showed no readable date, so
+# _cached_week is None although a page was seen.
+_page_week_unknown = False
 
 # Guards fetch_weekly_menu so a burst of requests at the start of a new week
 # triggers one scrape, not one per concurrent caller (production logs showed
@@ -38,15 +45,18 @@ def _page_week(table) -> tuple[int, int]:
     The header cells carry each weekday's date (`span.nowDate`, Monday first).
     The page does not always switch to the new week when the week turns -
     on Sunday it still shows the current one - so the week it reports, not the
-    week it was asked for, is what the cache must be marked with. Falls back
-    to today's week, with a warning, when no date can be read.
+    week it was asked for, is what the cache must be marked with. None, with a
+    warning, when no date can be read: guessing today's week would pass an
+    old page off as the new week for as long as the cache lives.
+
+    Format confirmed against the live page on 2026-11-25, see docs/KLAS.md.
     """
     span = table.find("span", {"class": "nowDate"})
     try:
         return datetime.date.fromisoformat(span.get_text(strip=True)).isocalendar()[:2]
     except (AttributeError, ValueError):
         logging.warning("Could not read the week from the school menu page")
-        return timezone.now().isocalendar()[:2]
+        return None
 
 
 async def fetch_weekly_menu() -> bool:
@@ -60,7 +70,7 @@ async def fetch_weekly_menu() -> bool:
     fetched", and get_menu_for_day re-scraped the page on every request for
     it, forever.
     """
-    global _cached_week
+    global _cached_week, _page_week_unknown
     url = "https://www.kw.ac.kr/ko/life/facility11.jsp"
     async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30)) as session:
         async with session.get(url) as response:
@@ -106,6 +116,7 @@ async def fetch_weekly_menu() -> bool:
             local_cache.clear()
             local_cache.update(new_data)
             _cached_week = _page_week(table)
+            _page_week_unknown = _cached_week is None
             return True
 
 
@@ -158,26 +169,35 @@ async def get_menu_for_day(
         async with _fetch_lock:
             # Re-check inside the lock: a concurrent caller may have already
             # refreshed the cache while this one was waiting for it.
-            missed = _missed_at.get(current_week)
-            recently_missed = (
-                missed is not None and time.monotonic() - missed < RECHECK_SECONDS
-            )
-            if _cached_week != current_week and not recently_missed:
+            waiting = time.monotonic() < _retry_at.get(current_week, 0.0)
+            if _cached_week != current_week and not waiting:
                 logging.info(
                     f"Fetching weekly menu (year={current_week[0]}, "
                     f"week={current_week[1]})"
                 )
-                if await fetch_weekly_menu():
+                try:
+                    fetched = await fetch_weekly_menu()
+                except Exception:
+                    # Network errors and a changed page layout both land
+                    # here; the request must still be answered.
+                    logging.exception("Error while fetching the weekly school menu")
+                    fetched = False
+                if fetched:
                     # fetch_weekly_menu marked the cache with the week the page
                     # shows, which can still be the old one.
                     if _cached_week != current_week:
-                        _missed_at[current_week] = time.monotonic()
+                        _retry_at[current_week] = time.monotonic() + RECHECK_SECONDS
                 else:
                     logging.warning("Failed to fetch the weekly school menu")
+                    _retry_at[current_week] = (
+                        time.monotonic() + FAILURE_RECHECK_SECONDS
+                    )
 
-    # Never show another week's menu under this day's name. A failed first
-    # fetch leaves no marker and keeps the old "No data" behaviour.
-    if _cached_week is not None and _cached_week != current_week:
+    # Never show another week's menu under this day's name. A failed fetch
+    # with nothing cached keeps the old "No data" behaviour.
+    if _cached_week != current_week and (
+        _cached_week is not None or _page_week_unknown
+    ):
         return Strings.get("menu_not_published", user_lang)
 
     # Calculate the indexes for breakfast, lunch, and dinner for this day
