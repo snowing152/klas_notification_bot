@@ -1222,3 +1222,157 @@ async def test_post_json_never_has_more_than_the_cap_in_flight():
     )
 
     assert session.peak == kw_service.MAX_CONCURRENT_REQUESTS
+
+
+# --- Null and malformed fields in the todo parsers ----------------------------
+
+
+def test_null_dates_do_not_crash_the_parsers(fixed_now):
+    """KLAS sends keys with a null value; None < str used to raise a
+    TypeError, which failed the TaskGroup and emptied the whole todo list."""
+    api = KwangwoonUniversityApi()
+
+    assert api._get_not_done_lectures_info(
+        [
+            {"prog": 10, "startDate": None, "endDate": "2099-01-01 10:00", "sbjt": "x"},
+            {"prog": 10, "startDate": "2020-01-01 10:00", "endDate": None, "sbjt": "x"},
+        ]
+    ) == []
+    assert api._get_not_done_homeworks_info(
+        [{"submityn": "N", "startdate": None, "expiredate": None, "title": None}]
+    ) == []
+    assert api._get_not_done_team_projects_info(
+        [{"submityn": "N", "startdate": None, "expiredate": None, "title": None}]
+    ) == []
+    assert api._get_not_done_quizzes_info(
+        [{"issubmit": "N", "sdate": None, "edate": None, "papernm": None}]
+    ) == []
+
+
+def test_null_titles_become_empty_strings(fixed_now):
+    api = KwangwoonUniversityApi()
+
+    lectures = api._get_not_done_lectures_info(
+        [
+            {
+                "prog": 10,
+                "startDate": "2020-01-01 10:00",
+                "endDate": "2099-01-01 10:00",
+                "sbjt": None,
+            }
+        ]
+    )
+    homeworks = api._get_not_done_homeworks_info(
+        [
+            {
+                "submityn": "N",
+                "startdate": "2020-01-01 10:00:00",
+                "expiredate": "2099-01-01 10:00:00",
+                "title": None,
+            }
+        ]
+    )
+    quizzes = api._get_not_done_quizzes_info(
+        [
+            {
+                "issubmit": "N",
+                "sdate": "202001011000",
+                "edate": "209901011000",
+                "edt": "2099-01-01 10:00",
+                "papernm": None,
+            }
+        ]
+    )
+
+    assert lectures[0]["title"] == ""
+    assert homeworks[0]["title"] == ""
+    assert quizzes[0]["title"] == ""
+
+
+def test_a_quiz_without_a_displayed_deadline_is_skipped(fixed_now, caplog):
+    api = KwangwoonUniversityApi()
+
+    with caplog.at_level(logging.WARNING):
+        items = api._get_not_done_quizzes_info(
+            [
+                {
+                    "issubmit": "N",
+                    "sdate": "202001011000",
+                    "edate": "209901011000",
+                    "edt": None,
+                    "papernm": "Quiz 1",
+                }
+            ]
+        )
+
+    assert items == []
+    assert "without a usable deadline" in caplog.text
+
+
+def test_a_malformed_deadline_skips_only_that_row(fixed_now):
+    api = KwangwoonUniversityApi()
+    good = {
+        "submityn": "N",
+        "startdate": "2020-01-01 10:00:00",
+        "expiredate": "2099-01-01 10:00:00",
+        "title": "good",
+    }
+    bad = {**good, "expiredate": "2099-13-45 99:00:00", "title": "bad"}
+
+    items = api._get_not_done_homeworks_info([bad, good])
+
+    assert [item["title"] for item in items] == ["good"]
+
+
+def test_team_project_deadline_is_converted_to_seoul_time(fixed_now):
+    """11:00 at -05:00 is 01:00 the next day in Seoul; stripping the offset
+    without converting would have said 11:00."""
+    api = KwangwoonUniversityApi()
+
+    items = api._get_not_done_team_projects_info(
+        [
+            {
+                "submityn": "N",
+                "startdate": "2020-01-01T10:00:00.000+0900",
+                "expiredate": "2099-03-04T11:00:00.000-0500",
+                "title": "Project",
+            }
+        ]
+    )
+
+    assert items[0]["expire_at"] == datetime.datetime(2099, 3, 5, 1, 0)
+    assert items[0]["expire_at"].tzinfo is None
+
+
+def test_team_project_deadline_in_seoul_offset_is_unchanged(fixed_now):
+    api = KwangwoonUniversityApi()
+
+    items = api._get_not_done_team_projects_info(
+        [
+            {
+                "submityn": "N",
+                "startdate": "2020-01-01T10:00:00.000+0900",
+                "expiredate": "2099-03-04T11:00:00.000+0900",
+                "title": "Project",
+            }
+        ]
+    )
+
+    assert items[0]["expire_at"] == datetime.datetime(2099, 3, 4, 11, 0)
+
+
+async def test_a_null_subject_name_falls_back_to_unknown_subject(monkeypatch, fixed_now):
+    api = _api(
+        FakeResponse(
+            payload=[
+                {"value": "2026,2", "subjList": [{"value": "SUBJ", "name": None}]}
+            ]
+        )
+    )
+    api.login_id = STUDENT_ID
+    for name in CATEGORY_FETCHERS:
+        monkeypatch.setattr(api, name, _returning([]))
+
+    todo_list = await api.get_todo_list()
+
+    assert todo_list[0]["name"] == "Unknown Subject"
