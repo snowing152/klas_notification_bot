@@ -7,6 +7,7 @@ from contextlib import asynccontextmanager
 import pytest
 
 from app.database.database import (
+    RecordResult,
     save_user,
     get_klas_session,
     get_notification_state,
@@ -282,7 +283,7 @@ async def test_a_sent_reminder_the_database_refused_is_not_sent_again(monkeypatc
     real_record = notifications.record_sent_notifications
 
     async def database_is_locked(user_id, entries):
-        return False
+        return RecordResult.FAILED
 
     monkeypatch.setattr(notifications, "record_sent_notifications", database_is_locked)
     assert await notifications._process_user(FakeUser("1")) == (True, 1)
@@ -524,7 +525,7 @@ async def test_the_first_cycle_does_not_seed_from_a_partial_read(monkeypatch):
 
 async def _registered(user_id="1"):
     """Session rows, the prompt flag among them, exist only for registered users."""
-    await save_user(user_id, "student", b"encrypted", Language.EN)
+    await save_user(user_id, f"student{user_id}", b"encrypted", Language.EN)
 
 
 def _needs_login(monkeypatch, hour=12, bot=None):
@@ -1057,3 +1058,86 @@ async def test_forget_user_clears_the_in_memory_state():
     assert "1" not in notifications._unrecorded
     assert "1" not in notifications._holding
     assert "2" in notifications._unrecorded
+
+
+async def test_a_user_who_switched_accounts_while_queued_is_skipped(monkeypatch):
+    """The cycle holds the user object loaded before the switch; logging in
+    with it would read the old account and seed the new one from it."""
+    from app.database.database import save_user as save
+
+    api = FakeApi(todo_list=make_todo(hours=100))
+    bot = _patch_user_deps(monkeypatch, api)
+    await save("1", "student-other", "enc", Language.EN)  # re-registered
+
+    assert await notifications._process_user(FakeUser("1")) == (True, 0)
+
+    assert bot.sent == []
+    assert not (await get_notification_state("1")).seeded
+
+
+async def test_a_user_who_switched_accounts_during_the_fetch_is_not_seeded(monkeypatch):
+    from app.database.database import save_user as save
+
+    class SwitchingApi(FakeApi):
+        async def get_todo_list(self):
+            await save("1", "student-other", "enc", Language.EN)
+            return self._todo_list
+
+    bot = _patch_user_deps(monkeypatch, SwitchingApi(todo_list=make_todo(hours=100)))
+
+    assert await notifications._process_user(FakeUser("1")) == (True, 0)
+
+    assert not (await get_notification_state("1")).seeded
+    assert await get_sent_notifications("1") == {}
+    assert bot.sent == []
+
+
+async def test_a_user_deleted_before_their_turn_is_not_a_failure(monkeypatch, caplog):
+    from app.database.database import delete_user
+
+    _patch_user_deps(monkeypatch, FakeApi(todo_list=make_todo(hours=100)))
+    await delete_user("1")
+
+    with caplog.at_level(logging.INFO):
+        assert await notifications._process_user(FakeUser("1")) == (True, 0)
+
+    assert "Could not read notification settings" not in caplog.text
+
+
+async def test_a_user_deleted_between_the_check_and_the_reads_is_not_a_failure(
+    monkeypatch, caplog
+):
+    from app.database.database import delete_user
+
+    _patch_user_deps(monkeypatch, FakeApi(todo_list=make_todo(hours=100)))
+    real_current = notifications._is_current
+
+    async def current_then_deleted(user):
+        result = await real_current(user)
+        await delete_user(user.user_id)
+        return result
+
+    monkeypatch.setattr(notifications, "_is_current", current_then_deleted)
+
+    with caplog.at_level(logging.INFO):
+        assert await notifications._process_user(FakeUser("1")) == (True, 0)
+
+    assert "Could not read notification settings" not in caplog.text
+
+
+async def test_a_deleted_user_is_not_requeued_when_the_write_fails(monkeypatch):
+    async def database_is_locked(user_id, entries):
+        return RecordResult.FAILED
+
+    async def user_gone(user_id, entries):
+        return RecordResult.USER_GONE
+
+    monkeypatch.setattr(notifications, "record_sent_notifications", database_is_locked)
+    await notifications._record_sent("1", [("A_homeworks_Report", "new")])
+    assert "1" in notifications._unrecorded
+
+    notifications.forget_user("1")
+    monkeypatch.setattr(notifications, "record_sent_notifications", user_gone)
+    await notifications._record_sent("1", [("A_homeworks_Report", "new")])
+
+    assert notifications._unrecorded == {}

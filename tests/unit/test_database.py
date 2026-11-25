@@ -6,7 +6,9 @@ from app.database.database import (
     get_notification_state,
     get_sent_notifications,
     init_db,
+    RecordResult,
     record_sent_notifications,
+    update_notification_state,
     save_user,
     get_user,
     get_user_language,
@@ -93,7 +95,7 @@ async def test_a_batch_with_an_internal_duplicate_is_stored_whole(test_engine):
     await save_user("1", "student", "enc", Language.EN)
     batch = [("A_homeworks_Report", "new"), ("A_homeworks_Report", "new"), ("B_quizzes_Q", "t3")]
 
-    assert await record_sent_notifications("1", batch) is True
+    assert await record_sent_notifications("1", batch) is RecordResult.RECORDED
 
     assert await get_sent_notifications("1") == {
         "A_homeworks_Report": {"new"},
@@ -110,7 +112,7 @@ async def test_a_batch_with_an_already_stored_pair_is_stored_whole(test_engine):
         "1", [("A_homeworks_Report", "new"), ("A_homeworks_Report", "t24")]
     )
 
-    assert ok is True
+    assert ok is RecordResult.RECORDED
     assert await get_sent_notifications("1") == {"A_homeworks_Report": {"new", "t24"}}
 
 
@@ -118,7 +120,10 @@ async def test_a_batch_with_an_already_stored_pair_is_stored_whole(test_engine):
 async def test_nothing_is_recorded_for_an_unregistered_user(test_engine):
     """A cycle running while the user deleted their data must not bring
     assignment titles back."""
-    assert await record_sent_notifications("gone", [("A_homeworks_Report", "new")]) is True
+    assert (
+        await record_sent_notifications("gone", [("A_homeworks_Report", "new")])
+        is RecordResult.USER_GONE
+    )
 
     assert await get_sent_notifications("gone") == {}
 
@@ -138,3 +143,22 @@ async def test_state_and_settings_are_created_for_a_registered_user(test_engine)
 
     assert (await get_notification_state("1")).seeded is False
     assert (await get_user_settings("1")).quiet_hours is True
+
+
+@pytest.mark.asyncio
+async def test_notification_state_is_not_written_for_an_unregistered_user(test_engine):
+    assert await update_notification_state("gone", seeded=True) is False
+
+    async with db.AsyncSessionLocal() as session:
+        assert await session.get(NotificationState, "gone") is None
+
+
+@pytest.mark.asyncio
+async def test_a_large_backlog_is_recorded_in_full(test_engine):
+    """A seeding cycle can carry more pairs than one compound SELECT holds."""
+    await save_user("1", "student", "enc", Language.EN)
+    batch = [(f"A_homeworks_Report {i}", "new") for i in range(650)]
+
+    assert await record_sent_notifications("1", batch) is RecordResult.RECORDED
+
+    assert len(await get_sent_notifications("1")) == 650

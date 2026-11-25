@@ -152,3 +152,16 @@ async def test_an_unregistered_user_is_asked_to_register_not_shown_an_error():
     assert text == Strings.get("need_to_register", Language.EN)
     assert message.answer.call_args.kwargs["reply_markup"] is not None
     assert await get_user_settings("556") is None, "no row for an unregistered user"
+
+
+@pytest.mark.asyncio
+async def test_a_toggle_by_an_unregistered_user_asks_them_to_register():
+    callback = make_callback("settings_quiet", user_id="557")
+
+    await process_settings_callback(callback)
+
+    callback.message.answer.assert_called_once()
+    assert callback.message.answer.call_args[0][0] == Strings.get(
+        "need_to_register", Language.EN
+    )
+    assert await get_user_settings("557") is None

@@ -5,10 +5,12 @@ from app.bot import bot
 from app.config import settings
 
 from app.database.database import (
+    RecordResult,
     get_all_users,
     get_klas_session,
     get_notification_state,
     get_sent_notifications,
+    get_user,
     get_user_language,
     get_user_settings,
     prune_sent_notifications,
@@ -335,7 +337,12 @@ async def _record_sent(user_id: str, entries) -> None:
     # Order-preserving dedupe: the same pair can be owed twice (two assignments
     # with one title), and the database ignores repeats anyway.
     pending = list(dict.fromkeys(_unrecorded.pop(user_id, []) + list(entries)))
-    if pending and not await record_sent_notifications(user_id, pending):
+    if not pending:
+        return
+    result = await record_sent_notifications(user_id, pending)
+    # USER_GONE: nothing is owed to someone who deleted their data, and keeping
+    # the entries would put their assignment titles back in memory.
+    if result is RecordResult.FAILED:
         _unrecorded[user_id] = pending
         logging.error(
             f"Could not record {len(pending)} sent notifications for {user_id}; "
@@ -353,6 +360,18 @@ def forget_user(user_id: str) -> None:
     _holding.pop(user_id, None)
 
 
+async def _is_current(user) -> bool:
+    """Is `user` still the registration they were loaded as?
+
+    The cycle loads every user up front, so by the time one is reached they may
+    have deleted their data or registered another student number. Going on
+    would log in with the old credentials and write the old account's state
+    over the new one.
+    """
+    current = await get_user(user.user_id)
+    return current is not None and current.username == user.username
+
+
 async def _process_user(user) -> tuple[bool, int]:
     """Check one user's assignments and send whatever is due.
 
@@ -365,13 +384,20 @@ async def _process_user(user) -> tuple[bool, int]:
     sent_count = 0
 
     try:
+        if not await _is_current(user):
+            logging.info(f"User {user_id} was deleted or re-registered; skipping")
+            return True, 0
+
         user_lang = await get_user_language(user_id) or Language.EN
         state = await get_notification_state(user_id)
         user_settings = await get_user_settings(user_id)
         if state is None or user_settings is None:
-            # Unreadable or no longer registered. Carrying on with defaults
-            # would re-seed (recording new work as announced, unsent) and
-            # ignore the user's switches, so skip the cycle.
+            if await get_user(user_id) is None:
+                logging.info(f"User {user_id} was deleted during the cycle; skipping")
+                return True, 0
+            # Unreadable. Carrying on with defaults would re-seed (recording
+            # new work as announced, unsent) and ignore the user's switches,
+            # so skip the cycle.
             logging.warning(f"Could not read notification settings for {user_id}")
             return False, 0
 
@@ -419,6 +445,12 @@ async def _process_user(user) -> tuple[bool, int]:
                 _log_holds(user_id, set(), set())
                 return True, 0
 
+            # Reading KLAS took seconds; the user may have switched accounts
+            # meanwhile, and everything below would be written to the new one.
+            if not await _is_current(user):
+                logging.info(f"User {user_id} was deleted or re-registered; skipping")
+                return True, 0
+
             # A category KLAS refused arrives as an empty one, which is also
             # what "all of it handed in" looks like. What was read is still
             # worth reminding about; what must not happen is acting on the
@@ -452,6 +484,9 @@ async def _process_user(user) -> tuple[bool, int]:
             if not seeded:
                 # First cycle for this user: remember what they already have so
                 # the whole semester's backlog is not announced as brand new.
+                if not await _is_current(user):
+                    logging.info(f"User {user_id} was deleted or re-registered; not seeding")
+                    return True, 0
                 new_entries = [item["entry"] for item in new_items]
                 await _record_sent(user_id, new_entries)
                 await update_notification_state(user_id, seeded=True)

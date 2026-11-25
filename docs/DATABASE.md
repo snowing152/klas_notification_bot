@@ -35,7 +35,9 @@ counts as personal data and how the passwords are encrypted is in
 Rows in `notification_state` and `user_settings` are created with defaults on first
 read (`get_notification_state`, `get_user_settings`), but only for a registered user,
 checked in the same transaction like `update_klas_session`: for an unregistered one they
-return `None`, and `record_sent_notifications` writes nothing, so a cycle running while
+return `None`, `update_notification_state` answers `False`, and `record_sent_notifications`
+(one `INSERT ... SELECT ... WHERE EXISTS` statement, since a separate SELECT and INSERT are
+not atomic under pysqlite; it answers `RecordResult.USER_GONE`) writes nothing, so a cycle running while
 someone deletes their data cannot bring rows (with assignment titles) back.
 `record_sent_notifications` inserts with `ON CONFLICT DO NOTHING`: the key is only
 (user, assignment key, kind), and a pair that is listed twice or already stored must not

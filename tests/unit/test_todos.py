@@ -540,3 +540,24 @@ async def test_a_deleted_user_is_not_served_from_a_cache_written_after_deletion(
 
     assert await todos._load_items("710") == ("no_user", None)
     assert "710" not in todos._items_cache
+
+
+@pytest.mark.asyncio
+async def test_nothing_is_cached_when_the_user_was_deleted_during_the_fetch():
+    """KLAS takes seconds; an entry written after the deletion would be a
+    deleted user's assignment list sitting in memory."""
+    from app.database.database import delete_user
+
+    await _register("711")
+
+    class DeletingApi(FakeApi):
+        async def get_todo_list(self):
+            await delete_user("711")
+            return self._todo_list
+
+    api = DeletingApi(todo_list=[make_subject("Algorithms", [("homeworks", "Secret", 5)])])
+
+    with patch_session(api):
+        await todos._load_items("711")
+
+    assert "711" not in todos._items_cache

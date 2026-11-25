@@ -432,3 +432,23 @@ async def test_register_with_the_same_id_keeps_the_notification_history(fake_api
     await auth.process_password(_message("pw"), _state())
 
     assert await get_sent_notifications("42") == {"Algorithms_homeworks_Report": {"new"}}
+
+
+async def test_a_failed_save_keeps_the_old_accounts_notification_history(
+    fake_api, monkeypatch
+):
+    from app.database.database import get_sent_notifications, record_sent_notifications
+
+    await _register(username="2023111111")
+    await record_sent_notifications("42", [("Algorithms_homeworks_Report", "new")])
+    fake_api()
+
+    async def refused(*args, **kwargs):
+        return False
+
+    monkeypatch.setattr(auth, "save_user", refused)
+
+    await auth.process_password(_message("pw"), _state(username="2024000000"))
+
+    assert (await get_user("42")).username == "2023111111"
+    assert await get_sent_notifications("42") == {"Algorithms_homeworks_Report": {"new"}}

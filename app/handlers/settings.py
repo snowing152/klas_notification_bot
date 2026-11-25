@@ -72,6 +72,14 @@ async def process_settings_callback(callback_query: types.CallbackQuery):
             await callback_query.answer()
             return
 
+        if await get_user(user_id) is None:
+            await callback_query.message.answer(
+                Strings.get("need_to_register", user_lang),
+                reply_markup=create_login_klas_keyboard(user_lang),
+            )
+            await callback_query.answer()
+            return
+
         settings_row = await get_user_settings(user_id)
         if settings_row is None:
             await callback_query.answer()
