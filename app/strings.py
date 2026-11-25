@@ -114,6 +114,7 @@ Available 11:30AM - 2:00PM at 연구관 B1 floor
 All options are buffet-style! Pay once and enjoy as much as you like 🍴
 """,
             "school_closed_on_weekend": "The university cafeterias are closed on weekends. Looking forward to serving you again on Monday! 🍽️",
+            "menu_not_published": "The menu for that day is not published yet. Please check back later. 🍽️",
             "foreigners_news": "🌏 International News",
             "all_news": "📰 All News",
             "tomorrow_menu": "🗓️ Tomorrow's Menu",
@@ -271,6 +272,7 @@ KLAS 과제를 추적하고 마감일 전에 알려드려요 🧭
 모든 옵션은 뷔페 스타일! 한 번 결제하고 원하는 만큼 즐기세요 🍴
 """,
             "school_closed_on_weekend": "대학 식당은 주말에 운영하지 않습니다. 월요일에 다시 뵙겠습니다! 🍽️",
+            "menu_not_published": "해당 날짜의 식단이 아직 게시되지 않았습니다. 나중에 다시 확인해 주세요. 🍽️",
             "foreigners_news": "🌏 국제 뉴스",
             "all_news": "📰 모든 뉴스",
             "tomorrow_menu": "🗓️ 내일 메뉴",
@@ -429,6 +431,7 @@ KLAS 과제를 추적하고 마감일 전에 알려드려요 🧭
 Все варианты в стиле шведского стола! Заплатите один раз и наслаждайтесь сколько хотите 🍴
 """,
             "school_closed_on_weekend": "Университетская столовая не работает в выходные. Увидимся в понедельник! 🍽️",
+            "menu_not_published": "Меню на этот день ещё не опубликовано. Загляните позже. 🍽️",
             "foreigners_news": "🌏 Международные новости",
             "all_news": "📰 Все новости",
             "tomorrow_menu": "🗓️ Меню на завтра",

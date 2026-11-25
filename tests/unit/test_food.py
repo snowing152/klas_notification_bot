@@ -89,9 +89,11 @@ def reset_food_cache():
     next test's cache."""
     food_service.local_cache.clear()
     food_service._cached_week = None
+    food_service._missed_at.clear()
     yield
     food_service.local_cache.clear()
     food_service._cached_week = None
+    food_service._missed_at.clear()
 
 
 @pytest.mark.asyncio
@@ -135,27 +137,106 @@ async def test_get_menu_for_day_fetches_only_once_per_week(monkeypatch):
 
 SUNDAY_WEEK_A = datetime(2026, 9, 20, 12, 0)  # ISO week 38, Monday is week 39
 
-HTML_NEXT_WEEK = HTML_WITH_ONE_EMPTY_DAY.replace("Mon breakfast", "Next Monday")
+def _page(monday: str, breakfast: str) -> str:
+    """The menu page as KLAS-side HTML: a header cell with the date, then one
+    breakfast row (Monday's cell is `breakfast`)."""
+    return f"""
+<div class="table-scroll-box">
+  <table class="tbl-list">
+    <thead><tr><th><span class="nowDate">{monday}</span></th></tr></thead>
+    <tbody class="dietData">
+      <tr><td class="vt al"><pre>{breakfast}</pre></td></tr>
+    </tbody>
+  </table>
+</div>
+"""
+
+
+PAGE_WEEK_38 = _page("2026-09-14", "Old Monday")
+PAGE_WEEK_39 = _page("2026-09-21", "Next Monday")
+EN = food_service.Language.EN
+NOT_PUBLISHED = food_service.Strings.get("menu_not_published", EN)
+
+
+def _advance_clock(monkeypatch, seconds):
+    start = food_service.time.monotonic()
+    monkeypatch.setattr(food_service.time, "monotonic", lambda: start + seconds)
 
 
 @pytest.mark.asyncio
-async def test_sundays_tomorrow_refetches_for_next_weeks_monday(monkeypatch):
-    """Sunday's tomorrow is Monday index 0 of the *next* ISO week; the cache
-    still held the Monday that had already passed."""
-    calls = _stub_fetch(monkeypatch, HTML_WITH_ONE_EMPTY_DAY, HTML_NEXT_WEEK)
-    _freeze_now(monkeypatch, MONDAY_WEEK_A)
-    await food_service.get_menu_for_day(0, food_service.Language.EN)
-    assert len(calls) == 1
-
-    # The menu's day gating returns "closed" on weekends before this point, so
-    # exercise the Sunday clock through the tomorrow entry point.
+async def test_page_week_is_read_from_the_page_not_the_caller(monkeypatch):
+    _stub_fetch(monkeypatch, PAGE_WEEK_38)
     _freeze_now(monkeypatch, SUNDAY_WEEK_A)
-    text = await food_service.get_tomorrow_school_food_menu(food_service.Language.EN)
+
+    await food_service.fetch_weekly_menu()
+
+    assert food_service._cached_week == (2026, 38)
+
+
+@pytest.mark.asyncio
+async def test_sunday_with_the_page_still_on_this_week_is_not_published(monkeypatch):
+    calls = _stub_fetch(monkeypatch, PAGE_WEEK_38)
+    _freeze_now(monkeypatch, SUNDAY_WEEK_A)
+
+    first = await food_service.get_tomorrow_school_food_menu(EN)
+    second = await food_service.get_tomorrow_school_food_menu(EN)
+
+    assert first == second == NOT_PUBLISHED
+    assert len(calls) == 1  # no re-scrape on the second request within the hour
+
+
+@pytest.mark.asyncio
+async def test_the_missed_week_is_rechecked_after_an_hour(monkeypatch):
+    calls = _stub_fetch(monkeypatch, PAGE_WEEK_38, PAGE_WEEK_39)
+    _freeze_now(monkeypatch, SUNDAY_WEEK_A)
+    await food_service.get_tomorrow_school_food_menu(EN)
+
+    _advance_clock(monkeypatch, food_service.RECHECK_SECONDS + 1)
+    text = await food_service.get_tomorrow_school_food_menu(EN)
 
     assert len(calls) == 2
     assert "Next Monday" in text
-    assert "Mon breakfast" not in text
-    assert food_service._cached_week == (2026, 39)
+
+
+@pytest.mark.asyncio
+async def test_sunday_with_the_page_already_on_next_week_shows_it(monkeypatch):
+    calls = _stub_fetch(monkeypatch, PAGE_WEEK_39)
+    _freeze_now(monkeypatch, SUNDAY_WEEK_A)
+
+    text = await food_service.get_tomorrow_school_food_menu(EN)
+
+    assert "Next Monday" in text
+    assert len(calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_monday_after_a_sunday_fetch_of_the_old_page_refetches(monkeypatch):
+    calls = _stub_fetch(monkeypatch, PAGE_WEEK_38, PAGE_WEEK_39)
+    _freeze_now(monkeypatch, SUNDAY_WEEK_A)
+    await food_service.get_tomorrow_school_food_menu(EN)
+
+    _freeze_now(monkeypatch, datetime(2026, 9, 21, 9, 0))
+    _advance_clock(monkeypatch, 15 * 3600)
+    text = await food_service.get_today_school_food_menu(EN)
+
+    assert len(calls) == 2
+    assert "Next Monday" in text
+    assert "Old Monday" not in text
+
+
+@pytest.mark.asyncio
+async def test_an_unreadable_page_date_falls_back_to_todays_week(monkeypatch, caplog):
+    calls = _stub_fetch(monkeypatch, _page("not-a-date", "Mon here"))
+    _freeze_now(monkeypatch, MONDAY_WEEK_A)
+
+    with caplog.at_level("WARNING"):
+        text = await food_service.get_menu_for_day(0, EN)
+
+    assert "Mon here" in text
+    assert food_service._cached_week == (2026, 38)
+    assert "Could not read the week" in caplog.text
+    await food_service.get_menu_for_day(0, EN)
+    assert len(calls) == 1
 
 
 @pytest.mark.asyncio
