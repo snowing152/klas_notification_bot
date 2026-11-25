@@ -48,3 +48,7 @@ order by deadline holds however late the cache is read.
 
 Where KLAS gives only a date, as it does for a discussion's window, the deadline is that
 day's 23:59 ([KLAS.md](KLAS.md#assignment-categories)).
+
+In `/show` and the "New in KLAS" alert, an item shows its exact time left when its
+deadline falls today or tomorrow by the Seoul calendar, not when it is under 24 hours
+away: everything under one "Tomorrow" header then looks the same.

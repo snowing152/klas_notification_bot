@@ -871,7 +871,9 @@ async def test_new_assignments_use_day_grouping_and_their_own_header(monkeypatch
     assert "Time remaining" not in text
 
 
-async def test_new_assignments_far_out_go_into_the_later_block(monkeypatch):
+async def test_new_assignments_far_out_are_shown_open_not_folded(monkeypatch):
+    # Most work is posted more than a week ahead; folding it into /show's
+    # "Later" block would hide the very thing the alert announces.
     await update_notification_state("1", seeded=True)
     api = FakeApi(todo_list=make_todo(title="Project", hours=24 * 12))
     bot = _patch_user_deps(monkeypatch, api)
@@ -879,8 +881,9 @@ async def test_new_assignments_far_out_go_into_the_later_block(monkeypatch):
     await notifications._process_user(FakeUser("1"))
 
     text = bot.sent[0][1]
-    assert "<blockquote expandable><b>🗓 Later (1)</b>" in text
-    assert text.endswith("</blockquote>")
+    assert "<blockquote" not in text
+    assert "Later" not in text
+    assert "\nAlgorithms\n" in text and "Project" in text
 
 
 async def test_titles_are_html_escaped_in_both_kinds_of_message(monkeypatch):

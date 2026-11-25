@@ -121,10 +121,16 @@ async def send_new_assignments(
     as `send_notification`.
 
     The deadline thresholds only start at 24 hours, so work posted a week in
-    advance stayed invisible until its last day.
+    advance stayed invisible until its last day. For the same reason every day
+    stays open here: /show's collapsed "Later" block would hide exactly the
+    work this alert exists to announce.
     """
     chunks = render_assignment_chunks(
-        items, user_lang, now or timezone.now(), header_key="new_assignments_header"
+        items,
+        user_lang,
+        now or timezone.now(),
+        header_key="new_assignments_header",
+        horizon_days=None,
     )
     return await _deliver(chunks, user_id, " (new assignments)")
 

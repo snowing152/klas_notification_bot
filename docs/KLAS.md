@@ -168,7 +168,7 @@ homeworks, team projects, quizzes and 토론 (`discussions`) — and a category 
 the user if it appears in `TYPE_EMOJIS` (`app/utils/assignment_render.py`): it drives `/show`,
 `notifications.py` imports the same dict and `_collect_messages` only looks at its keys,
 and `ASSIGNMENT_TYPES` in the handler decides which side of the lectures/assignments
-filter it falls on. Each also needs a `type_<name>` string in all three languages.
+filter it falls on. No label string is needed: the emoji is the label.
 `discussions` is the odd one: `DscsnStdList.do` carries no "submitted" flag (its
 `toroncnt` is how many posts the whole class wrote), so participation costs a second
 request, `DscsnOpinionList.do`, per discussion whose date window is open — matched
@@ -186,8 +186,7 @@ Adding a category therefore touches, in order:
    list of fetches and the returned dict in `_get_subject_todo()`;
 2. `TYPE_EMOJIS` (and `TYPE_ORDER`, the tie-break order) in `app/utils/assignment_render.py`, and `ASSIGNMENT_TYPES` in `app/handlers/todos.py` unless it is
    something to watch rather than submit;
-3. `type_<name>` in EN, KO and RU ([LOCALIZATION.md](LOCALIZATION.md));
-4. tests in `tests/unit/test_kw.py`, fed with a captured response.
+3. tests in `tests/unit/test_kw.py`, fed with a captured response.
 
 ## When KLAS changes
 
