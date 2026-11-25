@@ -66,6 +66,8 @@ def fresh_cycle_memory():
     """What the notification loop keeps between cycles is module state."""
     notifications._holding.clear()
     notifications._unrecorded.clear()
+    notifications._waiting_for_login.clear()
+    notifications._session_since.clear()
 
 
 @pytest.fixture(autouse=True)
@@ -202,6 +204,93 @@ async def test_cycle_sums_notifications_sent_across_users(monkeypatch):
     users = [FakeUser("1"), FakeUser("2"), FakeUser("3")]
 
     assert await notifications.run_notification_cycle(users) == (0, 1 + 2 + 3)
+
+
+def test_summary_separates_users_waiting_for_login():
+    """Regression: "all 31 users checked" was logged while 21 of them were
+    waiting for a login and nothing was read for them."""
+    users = [FakeUser(str(i)) for i in range(5)]
+    notifications._waiting_for_login.update({"1", "2"})
+
+    level, line = notifications.cycle_summary(users, failed=1, sent=3)
+
+    assert level == logging.WARNING
+    assert line == (
+        "Notification cycle finished: 2 read, 2 waiting for login, "
+        "1 failed, 3 notifications sent"
+    )
+
+
+def test_summary_is_info_when_nothing_failed():
+    level, _ = notifications.cycle_summary([FakeUser("1")], failed=0, sent=0)
+
+    assert level == logging.INFO
+
+
+def test_summary_ignores_waiting_users_who_left():
+    notifications._waiting_for_login.add("gone")
+
+    _, line = notifications.cycle_summary([FakeUser("1")], failed=0, sent=0)
+
+    assert "1 read, 0 waiting for login" in line
+
+
+def test_summary_reports_the_oldest_session_of_current_users():
+    now = at_hour(12)
+    notifications._session_since.update(
+        {
+            "1": now - datetime.timedelta(hours=5),
+            "2": now - datetime.timedelta(hours=32, minutes=24),
+            "gone": now - datetime.timedelta(hours=100),
+        }
+    )
+
+    _, line = notifications.cycle_summary(
+        [FakeUser("1"), FakeUser("2")], failed=0, sent=0, now=now
+    )
+
+    assert line.endswith("; oldest KLAS session 32.4h")
+
+
+def test_summary_leaves_out_session_age_when_none_is_known():
+    _, line = notifications.cycle_summary([FakeUser("1")], failed=0, sent=0)
+
+    assert "oldest KLAS session" not in line
+
+
+async def test_waiting_for_login_is_logged_once_per_wait(monkeypatch, caplog):
+    """Regression: 456 of 501 log lines in one day were this message, repeated
+    every 30 minutes for the same users."""
+    caplog.set_level(logging.INFO)
+    _patch_user_deps(monkeypatch, None, status=SessionStatus.NEEDS_LOGIN)
+
+    async def no_prompt(*args):
+        return None
+
+    monkeypatch.setattr(notifications, "_ask_for_login", no_prompt)
+
+    for _ in range(3):
+        assert await notifications._process_user(FakeUser("1")) == (True, 0)
+
+    lines = [r.getMessage() for r in caplog.records if "has to act" in r.getMessage()]
+    assert lines == ["User 1 has to act before KLAS can be read"]
+    assert notifications._waiting_for_login == {"1"}
+
+
+async def test_a_read_ends_the_wait_and_records_the_session_start(monkeypatch):
+    started = at_hour(3)
+    notifications._waiting_for_login.add("1")
+    _patch_user_deps(monkeypatch, FakeApi(todo_list=[]))
+
+    @asynccontextmanager
+    async def active_session(user):
+        yield KlasAccess(SessionStatus.ACTIVE, FakeApi(todo_list=[]), started)
+
+    monkeypatch.setattr(notifications, "open_session", active_session)
+
+    assert await notifications._process_user(FakeUser("1")) == (True, 0)
+    assert notifications._waiting_for_login == set()
+    assert notifications._session_since == {"1": started}
 
 
 def _hold_lines(caplog) -> list:
@@ -1052,12 +1141,16 @@ async def test_forget_user_clears_the_in_memory_state():
     notifications._unrecorded["1"] = [("A_homeworks_Report", "new")]
     notifications._holding["1"] = {"threshold=3h"}
     notifications._unrecorded["2"] = [("B_quizzes_Q", "new")]
+    notifications._waiting_for_login.update({"1", "2"})
+    notifications._session_since["1"] = at_hour(3)
 
     notifications.forget_user("1")
 
     assert "1" not in notifications._unrecorded
     assert "1" not in notifications._holding
     assert "2" in notifications._unrecorded
+    assert notifications._waiting_for_login == {"2"}
+    assert "1" not in notifications._session_since
 
 
 async def test_a_user_who_switched_accounts_while_queued_is_skipped(monkeypatch):
