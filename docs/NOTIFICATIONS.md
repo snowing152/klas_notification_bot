@@ -127,7 +127,21 @@ Rules that follow from this, and that a change here has to keep:
 
 - A row is written (`_record_sent`) only after `_send` returned `True`, per chunk. If the write
   itself fails, the entries stay in `_unrecorded` and count as sent — the message is
-  already in the chat.
+  already in the chat. The batch is de-duplicated and inserted with `ON CONFLICT DO
+  NOTHING`, so one repeated pair can never make every later write fail.
+- `get_notification_state` and `get_user_settings` return `None` when the database cannot
+  be read and for an unregistered user. `_process_user` then skips the user for the cycle:
+  reading `None` as "not seeded" would re-seed (record new work as announced without
+  sending it), and as "no settings" would ignore the user's switches.
+- The cycle loads its users up front, so `_process_user` re-reads the registration
+  (`_is_current`) at the start, after the KLAS fetch and before seeding: a user who was
+  deleted, or who `/register`ed another student number in the meantime, is skipped
+  (`(True, 0)`, not a failure) instead of being read with the old credentials and having
+  the old account's state written over the new one.
+- `record_sent_notifications` answers `RecordResult.USER_GONE` for an unregistered user;
+  `_record_sent` then drops the entries instead of keeping them in `_unrecorded`.
+- `notifications.forget_user` clears `_unrecorded` and `_holding` for a user; it is called
+  by `auth.delete_all_user_data` and when `/register` switches to another student number.
 - `get_sent_notifications` returns `None`, not `{}`, when the database cannot be read:
   an empty dict would look like "nothing was ever sent".
 - An assignment has no id in KLAS, so its identity is

@@ -392,3 +392,63 @@ async def test_a_failed_delete_still_leaves_the_password_step(fake_api):
     message.answer.assert_awaited_with(
         Strings.get("registration_successful", Language.EN)
     )
+
+
+async def test_register_with_another_id_drops_everything_kept_for_the_old_one(
+    fake_api, tmp_path, monkeypatch
+):
+    from app.database.database import get_sent_notifications, record_sent_notifications
+    from app.handlers import student_info, todos
+    from app.services import notifications
+
+    monkeypatch.setattr(student_info, "PHOTOS_DIR", tmp_path)
+    await _register(username="2023111111")
+    await record_sent_notifications("42", [("Algorithms_homeworks_Report", "new")])
+    todos._items_cache["42"] = (0.0, [])
+    notifications._unrecorded["42"] = [("Algorithms_homeworks_Report", "t3")]
+    photo = student_info.student_photo_path("42")
+    photo.write_bytes(b"jpeg")
+    fake_api(approval=TWO_FACTOR)
+
+    try:
+        await auth.process_password(_message("pw"), _state(username="2024000000"))
+
+        assert await get_sent_notifications("42") == {}
+        assert "42" not in todos._items_cache
+        assert "42" not in notifications._unrecorded
+        assert not photo.exists()
+    finally:
+        todos._items_cache.clear()
+        notifications._unrecorded.clear()
+
+
+async def test_register_with_the_same_id_keeps_the_notification_history(fake_api):
+    from app.database.database import get_sent_notifications, record_sent_notifications
+
+    await _register()
+    await record_sent_notifications("42", [("Algorithms_homeworks_Report", "new")])
+    fake_api(approval=TWO_FACTOR)
+
+    await auth.process_password(_message("pw"), _state())
+
+    assert await get_sent_notifications("42") == {"Algorithms_homeworks_Report": {"new"}}
+
+
+async def test_a_failed_save_keeps_the_old_accounts_notification_history(
+    fake_api, monkeypatch
+):
+    from app.database.database import get_sent_notifications, record_sent_notifications
+
+    await _register(username="2023111111")
+    await record_sent_notifications("42", [("Algorithms_homeworks_Report", "new")])
+    fake_api()
+
+    async def refused(*args, **kwargs):
+        return False
+
+    monkeypatch.setattr(auth, "save_user", refused)
+
+    await auth.process_password(_message("pw"), _state(username="2024000000"))
+
+    assert (await get_user("42")).username == "2023111111"
+    assert await get_sent_notifications("42") == {"Algorithms_homeworks_Report": {"new"}}

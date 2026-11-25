@@ -7,6 +7,7 @@ from contextlib import asynccontextmanager
 import pytest
 
 from app.database.database import (
+    RecordResult,
     save_user,
     get_klas_session,
     get_notification_state,
@@ -65,6 +66,12 @@ def fresh_cycle_memory():
     """What the notification loop keeps between cycles is module state."""
     notifications._holding.clear()
     notifications._unrecorded.clear()
+
+
+@pytest.fixture(autouse=True)
+async def registered_user():
+    """The notification tables only take rows for a registered user."""
+    await save_user("1", "student1", "enc", Language.EN)
 
 
 def at_hour(hour):
@@ -276,7 +283,7 @@ async def test_a_sent_reminder_the_database_refused_is_not_sent_again(monkeypatc
     real_record = notifications.record_sent_notifications
 
     async def database_is_locked(user_id, entries):
-        return False
+        return RecordResult.FAILED
 
     monkeypatch.setattr(notifications, "record_sent_notifications", database_is_locked)
     assert await notifications._process_user(FakeUser("1")) == (True, 1)
@@ -518,7 +525,7 @@ async def test_the_first_cycle_does_not_seed_from_a_partial_read(monkeypatch):
 
 async def _registered(user_id="1"):
     """Session rows, the prompt flag among them, exist only for registered users."""
-    await save_user(user_id, "student", b"encrypted", Language.EN)
+    await save_user(user_id, f"student{user_id}", b"encrypted", Language.EN)
 
 
 def _needs_login(monkeypatch, hour=12, bot=None):
@@ -974,3 +981,163 @@ async def test_new_assignments_are_split_by_day_and_recorded_per_chunk(monkeypat
     texts = [text for _, text in flaky.sent + working.sent]
     for day in ("Tomorrow", "Tue, 22 Sep", "Wed, 23 Sep"):
         assert sum(f"<b>{day}" in text for text in texts) == 1
+
+
+async def test_a_duplicate_pair_does_not_block_later_recording():
+    """Two same-titled assignments owe the same pair. The rejected batch used
+    to stay in _unrecorded and fail every later write with it."""
+    await notifications._record_sent(
+        "1", [("A_homeworks_Report", "new"), ("A_homeworks_Report", "new")]
+    )
+    await notifications._record_sent("1", [("B_quizzes_Q", "new")])
+
+    assert notifications._unrecorded == {}
+    assert await get_sent_notifications("1") == {
+        "A_homeworks_Report": {"new"},
+        "B_quizzes_Q": {"new"},
+    }
+
+
+async def test_a_poisoned_unrecorded_batch_recovers():
+    from app.database.database import record_sent_notifications
+
+    await record_sent_notifications("1", [("A_homeworks_Report", "new")])
+    notifications._unrecorded["1"] = [
+        ("A_homeworks_Report", "new"),
+        ("A_homeworks_Report", "new"),
+    ]
+
+    await notifications._record_sent("1", [("B_quizzes_Q", "t3")])
+
+    assert notifications._unrecorded == {}
+    assert await get_sent_notifications("1") == {
+        "A_homeworks_Report": {"new"},
+        "B_quizzes_Q": {"t3"},
+    }
+
+
+async def test_a_failed_state_read_does_not_reseed_the_user(monkeypatch):
+    """None from the database used to read as "never seeded", which recorded
+    the real new assignments as announced without sending them."""
+    await update_notification_state("1", seeded=True)
+    api = FakeApi(todo_list=make_todo(hours=100))
+    bot = _patch_user_deps(monkeypatch, api)
+
+    async def unreadable(user_id):
+        return None
+
+    monkeypatch.setattr(notifications, "get_notification_state", unreadable)
+
+    assert await notifications._process_user(FakeUser("1")) == (False, 0)
+    assert bot.sent == []
+    assert await get_sent_notifications("1") == {}
+
+
+async def test_failed_settings_read_does_not_fall_back_to_defaults(monkeypatch):
+    """A user who switched alerts off would get them again."""
+    await update_notification_state("1", seeded=True)
+    await update_user_settings("1", deadline_alerts=False, new_assignment_alerts=False)
+    bot = _patch_user_deps(monkeypatch, FakeApi(todo_list=make_todo(hours=20)))
+
+    async def unreadable(user_id):
+        return None
+
+    monkeypatch.setattr(notifications, "get_user_settings", unreadable)
+
+    assert await notifications._process_user(FakeUser("1")) == (False, 0)
+    assert bot.sent == []
+
+
+async def test_forget_user_clears_the_in_memory_state():
+    notifications._unrecorded["1"] = [("A_homeworks_Report", "new")]
+    notifications._holding["1"] = {"threshold=3h"}
+    notifications._unrecorded["2"] = [("B_quizzes_Q", "new")]
+
+    notifications.forget_user("1")
+
+    assert "1" not in notifications._unrecorded
+    assert "1" not in notifications._holding
+    assert "2" in notifications._unrecorded
+
+
+async def test_a_user_who_switched_accounts_while_queued_is_skipped(monkeypatch):
+    """The cycle holds the user object loaded before the switch; logging in
+    with it would read the old account and seed the new one from it."""
+    from app.database.database import save_user as save
+
+    api = FakeApi(todo_list=make_todo(hours=100))
+    bot = _patch_user_deps(monkeypatch, api)
+    await save("1", "student-other", "enc", Language.EN)  # re-registered
+
+    assert await notifications._process_user(FakeUser("1")) == (True, 0)
+
+    assert bot.sent == []
+    assert not (await get_notification_state("1")).seeded
+
+
+async def test_a_user_who_switched_accounts_during_the_fetch_is_not_seeded(monkeypatch):
+    from app.database.database import save_user as save
+
+    class SwitchingApi(FakeApi):
+        async def get_todo_list(self):
+            await save("1", "student-other", "enc", Language.EN)
+            return self._todo_list
+
+    bot = _patch_user_deps(monkeypatch, SwitchingApi(todo_list=make_todo(hours=100)))
+
+    assert await notifications._process_user(FakeUser("1")) == (True, 0)
+
+    assert not (await get_notification_state("1")).seeded
+    assert await get_sent_notifications("1") == {}
+    assert bot.sent == []
+
+
+async def test_a_user_deleted_before_their_turn_is_not_a_failure(monkeypatch, caplog):
+    from app.database.database import delete_user
+
+    _patch_user_deps(monkeypatch, FakeApi(todo_list=make_todo(hours=100)))
+    await delete_user("1")
+
+    with caplog.at_level(logging.INFO):
+        assert await notifications._process_user(FakeUser("1")) == (True, 0)
+
+    assert "Could not read notification settings" not in caplog.text
+
+
+async def test_a_user_deleted_between_the_check_and_the_reads_is_not_a_failure(
+    monkeypatch, caplog
+):
+    from app.database.database import delete_user
+
+    _patch_user_deps(monkeypatch, FakeApi(todo_list=make_todo(hours=100)))
+    real_current = notifications._is_current
+
+    async def current_then_deleted(user):
+        result = await real_current(user)
+        await delete_user(user.user_id)
+        return result
+
+    monkeypatch.setattr(notifications, "_is_current", current_then_deleted)
+
+    with caplog.at_level(logging.INFO):
+        assert await notifications._process_user(FakeUser("1")) == (True, 0)
+
+    assert "Could not read notification settings" not in caplog.text
+
+
+async def test_a_deleted_user_is_not_requeued_when_the_write_fails(monkeypatch):
+    async def database_is_locked(user_id, entries):
+        return RecordResult.FAILED
+
+    async def user_gone(user_id, entries):
+        return RecordResult.USER_GONE
+
+    monkeypatch.setattr(notifications, "record_sent_notifications", database_is_locked)
+    await notifications._record_sent("1", [("A_homeworks_Report", "new")])
+    assert "1" in notifications._unrecorded
+
+    notifications.forget_user("1")
+    monkeypatch.setattr(notifications, "record_sent_notifications", user_gone)
+    await notifications._record_sent("1", [("A_homeworks_Report", "new")])
+
+    assert notifications._unrecorded == {}

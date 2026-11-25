@@ -73,13 +73,17 @@ async def _load_items(user_id: str) -> tuple[str, list[dict] | None]:
 
     status is "no_user", "needs_login", "password_rejected", "unavailable" or "ok".
     """
+    # Before the cache: a deleted user must never be served from memory, even
+    # if a fetch that was in flight when they deleted wrote an entry after it
+    # was forgotten.
+    user = await get_user(user_id)
+    if not user:
+        forget_cached_items(user_id)
+        return "no_user", None
+
     cached = _items_cache.get(user_id)
     if cached and time.monotonic() - cached[0] < CACHE_TTL_SECONDS:
         return "ok", cached[1]
-
-    user = await get_user(user_id)
-    if not user:
-        return "no_user", None
 
     async with open_session(user) as access:
         if access.status is SessionStatus.NEEDS_LOGIN:
@@ -97,7 +101,10 @@ async def _load_items(user_id: str) -> tuple[str, list[dict] | None]:
     # A list missing a category KLAS refused is shown, since it is all there
     # is, but not kept: the next /show should ask again rather than repeat the
     # gap for five minutes.
-    if not any(subject.get("incomplete") for subject in todo_list):
+    # Not for a user who deleted their data while KLAS was being read.
+    if not any(subject.get("incomplete") for subject in todo_list) and (
+        await get_user(user_id)
+    ):
         _items_cache[user_id] = (time.monotonic(), items)
     return "ok", items
 

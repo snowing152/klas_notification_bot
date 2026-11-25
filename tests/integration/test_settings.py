@@ -12,6 +12,12 @@ from app.services import announcements
 from app.strings import Language, Strings
 
 
+@pytest.fixture(autouse=True)
+async def registered_user():
+    """Preferences are only kept for a registered user."""
+    await save_user("555", "student", "enc", Language.EN)
+
+
 def make_message(user_id="555", language_code="en"):
     from_user = AsyncMock()
     from_user.id = user_id
@@ -134,3 +140,28 @@ async def test_announcement_dismissal_leaves_the_feature_off(monkeypatch):
     assert callback.message.edit_text.call_args[0][0] == Strings.get(
         "announcement_dismissed", Language.EN
     )
+
+
+@pytest.mark.asyncio
+async def test_an_unregistered_user_is_asked_to_register_not_shown_an_error():
+    message = make_message(user_id="556")
+
+    await cmd_settings(message)
+
+    text = message.answer.call_args[0][0]
+    assert text == Strings.get("need_to_register", Language.EN)
+    assert message.answer.call_args.kwargs["reply_markup"] is not None
+    assert await get_user_settings("556") is None, "no row for an unregistered user"
+
+
+@pytest.mark.asyncio
+async def test_a_toggle_by_an_unregistered_user_asks_them_to_register():
+    callback = make_callback("settings_quiet", user_id="557")
+
+    await process_settings_callback(callback)
+
+    callback.message.answer.assert_called_once()
+    assert callback.message.answer.call_args[0][0] == Strings.get(
+        "need_to_register", Language.EN
+    )
+    assert await get_user_settings("557") is None

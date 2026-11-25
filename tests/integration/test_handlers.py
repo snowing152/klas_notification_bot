@@ -62,11 +62,12 @@ async def test_unregistered_user_falls_back_to_client_language():
 @pytest.mark.asyncio
 async def test_cmd_unregister_deletes_every_trace_of_the_user(tmp_path, monkeypatch):
     """KLAS row, library row (second password + phone) and cached ID photo."""
+    from app.database import database as db
+    from app.database.models import UserSettings
     from app.database.database import (
         get_library_user,
         get_sent_notifications,
         get_user,
-        get_user_settings,
         record_sent_notifications,
         save_library_user,
         update_user_settings,
@@ -90,8 +91,9 @@ async def test_cmd_unregister_deletes_every_trace_of_the_user(tmp_path, monkeypa
     assert await get_user("42") is None
     assert await get_library_user("42") is None
     assert await get_sent_notifications("42") == {}
-    # The preferences row is gone too: the next /settings starts from defaults
-    assert (await get_user_settings("42")).quiet_hours is True
+    # The preferences row is gone too, not just unreadable
+    async with db.AsyncSessionLocal() as session:
+        assert await session.get(UserSettings, "42") is None
     assert not photo.exists()
     assert message.answer.call_args[0][0] == Strings.get("unregistered", Language.EN)
 
