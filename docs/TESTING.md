@@ -37,6 +37,12 @@ pytest --no-cov -q
 `DATA_DIR` needs no value: unset, it is the working directory, which exists, and the
 tests never write the database there.
 
+On Windows, the three tests that move the process clock through the `host_timezone`
+fixture are skipped: they need `time.tzset`, which exists only on Unix. They still run on
+Linux, which is what production is. A test that starts a subprocess with a minimal `env`
+has to pass `SYSTEMROOT` through on Windows, or `import asyncio` fails in the child
+before any bot code runs.
+
 ## Conventions
 
 `tests/conftest.py` has an **autouse** fixture that monkeypatches `db.engine` and

@@ -39,7 +39,13 @@ def host_timezone():
 
     app/config.py forces TZ=Asia/Seoul at import, so the test has to undo that
     to reproduce what the deployment actually looks like.
+
+    Skipped where time.tzset does not exist (Windows): the process clock cannot
+    be moved there, so these tests only run on Unix, like the deployment.
     """
+    if not hasattr(time, "tzset"):
+        pytest.skip("time.tzset is Unix-only; the host timezone cannot be changed here")
+
     original = os.environ.get("TZ")
 
     def _set(name: str):
