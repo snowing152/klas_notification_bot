@@ -347,7 +347,8 @@ sudo journalctl -u kwbot.service -f
 ### 🚂 Railway
 
 The bot is a worker — it polls Telegram and exposes no port, so no domain or health
-check is needed. `railway.json` already pins the builder and start command.
+check is needed. In the service settings set the builder to Nixpacks and the start command
+to `python main.py` (see [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md#railway)).
 
 **1. Attach a volume.** Railway wipes the container filesystem on every deploy. Without
 a volume, `bot_users.db` is destroyed and every user has to register again. In the

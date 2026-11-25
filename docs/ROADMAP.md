@@ -65,8 +65,9 @@ Cheap, no code, and everything else depends on them.
       ([DATABASE.md](DATABASE.md#backups)). The file holds every user's credentials, so
       the routine also decides who may read the backups.
 - [ ] Set the usage alert described above.
-- [ ] Confirm that the builder the live service uses is the one `railway.json` pins; a
-      dashboard setting and the file can disagree.
+- [x] Confirm the builder the live service uses. Done 2026-11-26: the dashboard said
+      Railpack while `railway.json` pinned Nixpacks; the file is gone and the service now
+      sets Nixpacks itself ([DEPLOYMENT.md](DEPLOYMENT.md#railway)).
 
 ## Phase 1 — Reliability and honesty
 
