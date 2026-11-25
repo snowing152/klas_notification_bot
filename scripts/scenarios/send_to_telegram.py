@@ -51,7 +51,12 @@ if not os.getenv("ENCRYPTION_KEY"):
 
 from app.bot import bot  # noqa: E402
 from app.config import settings  # noqa: E402
-from app.database.database import engine, get_sent_notifications, init_db  # noqa: E402
+from app.database.database import (  # noqa: E402
+    engine,
+    get_sent_notifications,
+    init_db,
+    save_user,
+)
 from app.services import notifications  # noqa: E402
 from app.strings import Language, Strings  # noqa: E402
 from app.utils import timezone  # noqa: E402
@@ -303,6 +308,7 @@ async def refusal(user_id, dry_run, report):
             raise RuntimeError("simulated Telegram refusal")
 
     fake_user = "999000111"
+    await _register(fake_user)
     original_send, original_delay = notifications.bot.send_message, notifications.SEND_DELAY_SECONDS
     notifications.bot.send_message = flaky_send
     notifications.SEND_DELAY_SECONDS = 0
@@ -323,8 +329,16 @@ async def refusal(user_id, dry_run, report):
 # --- runner -----------------------------------------------------------------
 
 
+async def _register(user_id: str) -> None:
+    """Notifications are only recorded for a registered user; the throwaway
+    database starts empty, so each recipient is registered in it first."""
+    if not await save_user(user_id, f"scenario{user_id}", "unused", Language.EN):
+        raise RuntimeError(f"could not register {user_id} in the temp database")
+
+
 async def run(names, chat_id, dry_run) -> int:
     await init_db()
+    await _register(chat_id)
     failed = 0
     try:
         for name in names:
