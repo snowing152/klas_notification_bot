@@ -1289,6 +1289,38 @@ def test_null_titles_become_empty_strings(fixed_now):
     assert quizzes[0]["title"] == ""
 
 
+def test_a_title_with_surrounding_whitespace_is_kept_exactly(fixed_now):
+    """The title is part of the notification key; trimming it would re-send
+    every alert for work the student was already told about."""
+    api = KwangwoonUniversityApi()
+
+    homeworks = api._get_not_done_homeworks_info(
+        [
+            {
+                "submityn": "N",
+                "startdate": "2020-01-01 10:00:00",
+                "expiredate": "2099-01-01 10:00:00",
+                "title": " Report 1 ",
+            }
+        ]
+    )
+
+    assert homeworks[0]["title"] == " Report 1 "
+
+
+async def test_an_empty_subject_name_is_kept(monkeypatch, fixed_now):
+    api = _api(
+        FakeResponse(
+            payload=[{"value": "2026,2", "subjList": [{"value": "S", "name": ""}]}]
+        )
+    )
+    api.login_id = STUDENT_ID
+    for name in CATEGORY_FETCHERS:
+        monkeypatch.setattr(api, name, _returning([]))
+
+    assert (await api.get_todo_list())[0]["name"] == ""
+
+
 def test_a_quiz_without_a_displayed_deadline_is_skipped(fixed_now, caplog):
     api = KwangwoonUniversityApi()
 

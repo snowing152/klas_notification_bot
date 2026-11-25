@@ -671,9 +671,12 @@ class KwangwoonUniversityApi:
         """A KLAS text field as a string: a missing or null field is "".
 
         `.get(key, default)` only covers an absent key, and KLAS sends the key
-        with a null value just as often.
+        with a null value just as often. Nothing else is touched, whitespace
+        included: assignment_key() is built from the title, and trimming a
+        title that KLAS has always sent with a trailing space would give it a
+        new key and repeat its alerts to everyone already notified.
         """
-        return str(value).strip() if value is not None else ""
+        return "" if value is None else str(value)
 
     def _deadline_or_none(self, kind: str, expire_date, date_format, *args):
         """The row's deadline, or None - with a warning - when it has none.
@@ -969,8 +972,12 @@ class KwangwoonUniversityApi:
         todo_list = [
             {
                 "id": subject.get("value"),
-                # A null name would reach the renderer as None.
-                "name": subject.get("name") or "Unknown Subject",
+                # Only a null name is replaced: an empty one has stored keys.
+                "name": (
+                    "Unknown Subject"
+                    if subject.get("name") is None
+                    else subject.get("name")
+                ),
                 "todo": {},
                 "incomplete": False,
             }
