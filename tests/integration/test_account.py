@@ -189,3 +189,31 @@ async def test_account_delete_no_redraws_the_account_screen():
     text = callback.message.edit_text.call_args[0][0]
     assert Strings.get("account_header", Language.EN) in text
     assert await get_user("910") is not None
+
+
+@pytest.mark.asyncio
+async def test_account_delete_yes_clears_the_fsm_state():
+    await save_user("911", "2020123456", "enc", Language.EN)
+    callback = make_callback("account_delete_yes", user_id="911")
+    state = make_state()
+
+    await process_account_callback(callback, state)
+
+    state.clear.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_account_delete_yes_reports_a_failed_deletion(monkeypatch):
+    from app.handlers import account
+
+    async def failed(user_id):
+        return False
+
+    monkeypatch.setattr(account, "delete_all_user_data", failed)
+    callback = make_callback("account_delete_yes", user_id="912")
+
+    await process_account_callback(callback, make_state())
+
+    assert callback.message.edit_text.call_args[0][0] == Strings.get(
+        "delete_data_failed", Language.EN
+    )

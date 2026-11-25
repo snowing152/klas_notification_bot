@@ -452,3 +452,65 @@ async def test_a_failed_save_keeps_the_old_accounts_notification_history(
 
     assert (await get_user("42")).username == "2023111111"
     assert await get_sent_notifications("42") == {"Algorithms_homeworks_Report": {"new"}}
+
+
+async def test_register_is_refused_after_three_rejected_passwords(fake_api):
+    """KLAS locks an account after five; the bot must stop well before."""
+    api = fake_api(first=WRONG)
+    for _ in range(3):
+        await auth.process_password(_message("wrong"), _state())
+    assert api.attempts == 3
+
+    message = _message("wrong")
+    await auth.process_password(message, _state())
+
+    assert api.attempts == 3, "the fourth attempt must not reach KLAS"
+    message.answer.assert_awaited_with(
+        Strings.get("register_attempts_limited", Language.EN)
+    )
+    message.delete.assert_awaited()
+
+
+async def test_the_limit_is_per_student_number(fake_api):
+    api = fake_api(first=WRONG)
+    for _ in range(3):
+        await auth.process_password(_message("wrong"), _state("2024000000"))
+
+    await auth.process_password(_message("wrong"), _state("2024999999"))
+
+    assert api.attempts == 4
+
+
+async def test_network_failures_do_not_count_toward_the_limit(fake_api):
+    api = fake_api(first=DOWN)
+    for _ in range(5):
+        await auth.process_password(_message("pw"), _state())
+
+    assert api.attempts == 5
+
+
+async def test_a_good_login_forgets_earlier_failures(fake_api):
+    api = fake_api(first=WRONG)
+    for _ in range(2):
+        await auth.process_password(_message("wrong"), _state())
+    api.first = TWO_FACTOR
+    await auth.process_password(_message("right"), _state())
+    api.first = WRONG
+    for _ in range(3):
+        await auth.process_password(_message("wrong"), _state())
+
+    assert api.attempts == 2 + 1 + 3
+
+
+def test_failures_expire_after_the_window(monkeypatch):
+    from app.services import login_limiter
+
+    clock = [1000.0]
+    monkeypatch.setattr(login_limiter.time, "monotonic", lambda: clock[0])
+    for _ in range(3):
+        login_limiter.record_failure("2024000000")
+    assert login_limiter.is_locked("2024000000")
+
+    clock[0] += login_limiter.WINDOW_SECONDS + 1
+
+    assert not login_limiter.is_locked("2024000000")

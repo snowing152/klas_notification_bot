@@ -75,3 +75,13 @@ async def test_session(isolated_database):
     )
     async with async_session() as session:
         yield session
+
+
+@pytest.fixture(autouse=True)
+def fresh_login_limiter():
+    """The failed-login counter is module-level; a test must not inherit it."""
+    from app.services import login_limiter
+
+    login_limiter._failures.clear()
+    yield
+    login_limiter._failures.clear()

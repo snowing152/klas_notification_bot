@@ -21,10 +21,11 @@ def make_message(text, user_id="1001", language_code="en"):
     return message
 
 
-def make_state(username="2021123456", password="pw"):
+def make_state(username="2021123456", phone_number="01099999999"):
+    # The password is deliberately not in the FSM data: it is the last step.
     state = AsyncMock()
     state.get_data = AsyncMock(
-        return_value={"username": username, "password": password}
+        return_value={"username": username, "phone_number": phone_number}
     )
     return state
 
@@ -43,10 +44,10 @@ async def test_wrong_phone_number_gets_a_specific_reason(monkeypatch):
     monkeypatch.setattr(auth_handlers, "get_secret_key", fake_get_secret_key)
     monkeypatch.setattr(auth_handlers, "library_login", fake_library_login)
 
-    message = make_message("01099999999")
+    message = make_message("pw")
     state = make_state()
 
-    await auth_handlers.process_library_phone_number(message, state)
+    await auth_handlers.process_library_password(message, state)
 
     message.answer.assert_called_once_with(
         Strings.get("library_login_phone_mismatch", Language.EN)
@@ -65,10 +66,10 @@ async def test_other_rejection_reasons_keep_the_generic_message(monkeypatch):
     monkeypatch.setattr(auth_handlers, "get_secret_key", fake_get_secret_key)
     monkeypatch.setattr(auth_handlers, "library_login", fake_library_login)
 
-    message = make_message("01099999999")
+    message = make_message("pw")
     state = make_state()
 
-    await auth_handlers.process_library_phone_number(message, state)
+    await auth_handlers.process_library_password(message, state)
 
     message.answer.assert_called_once_with(
         Strings.get("library_login_failed", Language.EN)
@@ -86,10 +87,10 @@ async def test_transport_failure_shows_the_generic_message(monkeypatch):
     monkeypatch.setattr(auth_handlers, "get_secret_key", fake_get_secret_key)
     monkeypatch.setattr(auth_handlers, "library_login", fake_library_login)
 
-    message = make_message("01099999999")
+    message = make_message("pw")
     state = make_state()
 
-    await auth_handlers.process_library_phone_number(message, state)
+    await auth_handlers.process_library_password(message, state)
 
     message.answer.assert_called_once_with(
         Strings.get("library_login_failed", Language.EN)
@@ -107,11 +108,65 @@ async def test_successful_login_still_saves_and_confirms(monkeypatch):
     monkeypatch.setattr(auth_handlers, "get_secret_key", fake_get_secret_key)
     monkeypatch.setattr(auth_handlers, "library_login", fake_library_login)
 
-    message = make_message("01099999999")
+    message = make_message("pw")
     state = make_state()
 
-    await auth_handlers.process_library_phone_number(message, state)
+    await auth_handlers.process_library_password(message, state)
 
     message.answer.assert_called_once_with(
         Strings.get("library_registration_successful", Language.EN)
     )
+
+
+@pytest.mark.asyncio
+async def test_username_step_asks_for_the_phone_number_next():
+    message = make_message("2021123456")
+    state = AsyncMock()
+
+    await auth_handlers.process_library_username(message, state)
+
+    state.set_state.assert_awaited_once_with(
+        auth_handlers.LibraryRegistrationStates.waiting_for_phone_number
+    )
+    message.answer.assert_called_once_with(
+        Strings.get("enter_phone_number", Language.EN)
+    )
+    message.delete.assert_awaited()
+
+
+@pytest.mark.asyncio
+async def test_phone_step_asks_for_the_password_and_never_stores_one():
+    message = make_message("01099999999")
+    state = AsyncMock()
+
+    await auth_handlers.process_library_phone_number(message, state)
+
+    state.update_data.assert_awaited_once_with(phone_number="01099999999")
+    state.set_state.assert_awaited_once_with(
+        auth_handlers.LibraryRegistrationStates.waiting_for_password
+    )
+    message.answer.assert_called_once_with(
+        Strings.get("library_enter_password", Language.EN)
+    )
+    message.delete.assert_awaited()
+
+
+@pytest.mark.asyncio
+async def test_password_step_deletes_the_message_and_clears_the_state(monkeypatch):
+    async def fake_get_secret_key(real_id):
+        return "sixteencharkeyxx"
+
+    async def fake_library_login(std_number, phone, password, secret):
+        assert (std_number, phone, password) == ("2021123456", "01099999999", "pw")
+        return "auth-key"
+
+    monkeypatch.setattr(auth_handlers, "get_secret_key", fake_get_secret_key)
+    monkeypatch.setattr(auth_handlers, "library_login", fake_library_login)
+    message = make_message("pw")
+    state = make_state()
+
+    await auth_handlers.process_library_password(message, state)
+
+    message.delete.assert_awaited()
+    state.clear.assert_awaited_once()
+    state.update_data.assert_not_called()
