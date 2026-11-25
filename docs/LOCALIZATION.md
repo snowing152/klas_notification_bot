@@ -28,9 +28,6 @@ in all three languages, identical placeholder sets — so a rule changed in one 
 changed in the other. `nonexistent_key` is deliberately EN-only; `test_string_fallback`
 uses it.
 
-Each assignment category also needs a `type_<name>` string in all three languages
-([KLAS.md](KLAS.md#assignment-categories)).
-
 ## Strings sent as HTML
 
 `/show` is sent with `parse_mode="HTML"` per call (never a global default: strings such as

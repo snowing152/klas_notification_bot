@@ -141,18 +141,22 @@ def test_later_block_counts_items_and_keeps_day_structure():
     assert "now" not in inside
 
 
-def test_only_the_next_24_hours_get_an_exact_time():
+def test_today_and_tomorrow_get_an_exact_time_and_later_days_do_not():
+    # NOW is Wednesday 00:30, so Thursday 23:00 is more than 24 hours away but
+    # still sits under "Tomorrow" next to items that are less.
     text = render_one(
         [
             item("homeworks", "S", "soon", hours=3, minutes=20),
             item("homeworks", "S", "edge", hours=24),
-            item("homeworks", "S", "far", hours=24, minutes=1),
+            at("homeworks", "S", "late-tomorrow", 1, hour=23),
+            at("homeworks", "S", "friday", 2, hour=9),
         ]
     )
     assert "soon · in 3h 20m" in text
     assert "edge · in 1d\n" in text
-    assert "far\n" in text + "\n"
-    assert not re.search(r"far.*in ", text)
+    assert "late-tomorrow · in 1d 22h 30m" in text
+    assert "friday\n" in text + "\n"
+    assert not re.search(r"friday.*in ", text)
 
 
 def test_zero_unit_rule_is_kept():
@@ -270,7 +274,7 @@ def test_later_block_moves_whole_to_a_new_chunk_when_it_does_not_fit():
     chunks = render_assignments(open_items + later, Language.EN, NOW)
 
     assert len(chunks) == 2
-    assert chunks[1].startswith("<blockquote expandable>")
+    assert chunks[1].startswith("<b>📋 Tasks</b>\n\n<blockquote expandable>")
     assert "<blockquote" not in chunks[0]
 
 
@@ -351,3 +355,50 @@ def test_localized_headers_are_natural():
     assert "<b>Пн, 30 ноя · через 5 дн.</b>" in ru
     assert "이후 (1)" in ko
     assert "Позже (1)" in ru
+
+
+def test_every_chunk_starts_with_the_header():
+    items = [at("homeworks", f"S{n}", f"t{n} " + "w" * 120, n % 6) for n in range(90)]
+    chunks = render_assignments(items, Language.EN, NOW, header_key="new_assignments_header")
+
+    assert len(chunks) > 1
+    for chunk in chunks:
+        assert chunk.startswith("<b>🆕 New in KLAS</b>\n\n")
+        assert telegram_len(chunk) <= 4096
+        balanced(chunk)
+
+
+def test_no_horizon_keeps_far_days_open():
+    chunks = render_assignments(
+        [at("homeworks", "S", "far", 12), at("homeworks", "S", "near", 1)],
+        Language.EN,
+        NOW,
+        horizon_days=None,
+    )
+
+    assert len(chunks) == 1
+    assert "<blockquote" not in chunks[0]
+    assert "Later" not in chunks[0]
+    assert f"\n{render.INDENT}📝 far" in chunks[0]
+
+
+def test_an_oversized_title_is_shortened_so_the_message_still_fits():
+    # Each "&" escapes to "&amp;", so an uncapped title of 4000 of them
+    # renders to 20000 units - a message Telegram refuses on every cycle.
+    huge = [item("homeworks", "S", "&" * 4000, hours=2), item("homeworks", "S" * 5000, "ok", hours=3)]
+    for chunk_text, chunk_items in render.render_assignment_chunks(huge, Language.EN, NOW):
+        assert telegram_len(chunk_text) <= 4096
+        balanced(chunk_text)
+    reminder = render.render_reminder_chunks(huge, "Due soon", Language.EN, NOW)
+    assert all(telegram_len(text) <= 4096 for text, _ in reminder)
+    joined = "".join(text for text, _ in reminder)
+    assert "…" in joined
+    assert sum(len(chunk_items) for _, chunk_items in reminder) == 2
+
+
+def test_shortening_never_splits_an_emoji_and_leaves_short_text_alone():
+    assert render._shorten("short") == "short"
+    cut = render._shorten("😀" * 300)
+    assert telegram_len(cut) <= render.MAX_TEXT_UNITS
+    assert cut.endswith("…")
+    assert cut[:-1] == "😀" * len(cut[:-1])

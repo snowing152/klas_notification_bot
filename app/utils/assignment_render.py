@@ -32,6 +32,14 @@ TYPE_ORDER = ("lectures", "homeworks", "quizzes", "team_projects", "discussions"
 HORIZON_DAYS = 7
 MESSAGE_LIMIT = 4096
 
+# KLAS titles and subject names are free text typed by professors. Capping them
+# keeps any one line far below MESSAGE_LIMIT: html.escape can grow a character
+# to 5 ("&" -> "&amp;"), so 200 units escape to at most 1000. Without the cap a
+# single oversized line was sent whole, refused by Telegram, left unrecorded
+# and retried every cycle.
+MAX_TEXT_UNITS = 200
+ELLIPSIS = "\u2026"
+
 # Non-breaking spaces: Telegram trims ordinary leading spaces on a line, and
 # these survive on every client without needing a monospace block.
 INDENT = "   "
@@ -51,6 +59,30 @@ def _tg_len(text: str) -> int:
     len() check and still be refused by Telegram.
     """
     return len(text.encode("utf-16-le")) // 2
+
+
+def _shorten(text: str, max_units: int = MAX_TEXT_UNITS) -> str:
+    """`text` cut to at most `max_units` UTF-16 units, ending in an ellipsis.
+
+    Cuts on code points, so a surrogate pair (an emoji) is never split in half.
+    """
+    if _tg_len(text) <= max_units:
+        return text
+    budget = max_units - _tg_len(ELLIPSIS)
+    kept: list[str] = []
+    used = 0
+    for char in text:
+        width = _tg_len(char)
+        if used + width > budget:
+            break
+        kept.append(char)
+        used += width
+    return "".join(kept).rstrip() + ELLIPSIS
+
+
+def _escape(text: str) -> str:
+    """KLAS text, capped and made safe for parse_mode="HTML"."""
+    return html.escape(_shorten(text), quote=False)
 
 
 def format_time_left(left_time: datetime.timedelta, user_lang) -> str:
@@ -110,11 +142,17 @@ def group_items(items: list[dict]) -> list[tuple[datetime.date, Subjects]]:
 
 def render_item(item: dict, user_lang, now: datetime.datetime) -> str:
     """One item line: type emoji, title, and the exact time left when the
-    deadline is less than 24 hours away."""
+    deadline falls today or tomorrow.
+
+    The cut-off is the calendar day, not "24 hours": under one "Tomorrow"
+    header every item shows its time, rather than only those that happen to
+    be less than 24 hours away at the moment of rendering.
+    """
     emoji = TYPE_EMOJIS.get(item["type"], FALLBACK_EMOJI)
-    line = f"{INDENT}{emoji} {html.escape(item['title'], quote=False)}"
+    line = f"{INDENT}{emoji} {_escape(item['title'])}"
     left = item["expire_at"] - now
-    if datetime.timedelta(0) < left <= datetime.timedelta(hours=24):
+    days_away = (item["expire_at"].date() - now.date()).days
+    if left > datetime.timedelta(0) and days_away <= 1:
         in_time = Strings.get(
             "show_in_time", user_lang, time_str=format_time_left(left, user_lang)
         )
@@ -130,7 +168,7 @@ def render_subject(
     The subject is plain text on purpose: the day header above it is bold, and
     two bold lines in a row read as one level of the hierarchy.
     """
-    lines = [html.escape(subject, quote=False)]
+    lines = [_escape(subject)]
     lines.extend(render_item(item, user_lang, now) for item in items)
     return "\n".join(lines)
 
@@ -207,7 +245,7 @@ def _pieces_under_header(
         if _tg_len(header) + 1 + _tg_len(block) <= limit:
             units.append((block, items))
             continue
-        subject_line = html.escape(subject, quote=False)
+        subject_line = _escape(subject)
         lines = [(render_item(item, user_lang, now), [item]) for item in items]
         room = limit - _tg_len(header) - 1 - _tg_len(subject_line) - 1
         units.extend(
@@ -263,26 +301,32 @@ def render_assignment_chunks(
     now: datetime.datetime,
     limit: int = MESSAGE_LIMIT,
     header_key: str = "show_header",
+    horizon_days: int | None = HORIZON_DAYS,
 ) -> list[Chunk]:
     """Day -> subject -> items as (html, items in that chunk) pairs, each text at
-    most `limit` UTF-16 units. `header_key` names the localized bold title.
+    most `limit` UTF-16 units. `header_key` names the localized bold title,
+    which every chunk starts with.
 
     Splits only at day boundaries (a day larger than `limit` is the one
-    exception). Days before today + HORIZON_DAYS are open; the rest sit in one
+    exception). Days before today + `horizon_days` are open; the rest sit in one
     expandable blockquote at the end, which is never split unless it alone
-    exceeds `limit`. The chunks' items together are exactly `items`.
+    exceeds `limit`. `horizon_days=None` keeps every day open - an alert about
+    new work must show it, not fold it away. The chunks' items together are
+    exactly `items`.
     """
     if not items:
         return [(Strings.get("no_assignments", user_lang), [])]
 
     header = _bold(Strings.get(header_key, user_lang))
-    horizon = now.date() + datetime.timedelta(days=HORIZON_DAYS)
     days = group_items(items)
-    open_days = [(d, s) for d, s in days if d < horizon]
-    later_days = [(d, s) for d, s in days if d >= horizon]
+    if horizon_days is None:
+        open_days, later_days = days, []
+    else:
+        horizon = now.date() + datetime.timedelta(days=horizon_days)
+        open_days = [(d, s) for d, s in days if d < horizon]
+        later_days = [(d, s) for d, s in days if d >= horizon]
 
-    # Room for the header even in the first chunk, so an oversized day split
-    # never produces a piece that cannot sit next to it.
+    # Every chunk starts with the header, so each unit must fit next to it.
     day_limit = limit - _tg_len(header) - _tg_len(DAY_SEPARATOR)
     units: list[Chunk] = []
     for day, subjects in open_days:
@@ -310,9 +354,12 @@ def render_assignment_chunks(
     current_items: list[dict] = []
     for text, unit_items in units:
         candidate = f"{current}{DAY_SEPARATOR}{text}"
-        if _tg_len(candidate) > limit:
+        if _tg_len(candidate) > limit and current_items:
+            # A follow-up message without the title reads like an unrequested
+            # /show reply, so it repeats the header.
             chunks.append((current, current_items))
-            current, current_items = text, list(unit_items)
+            current = f"{header}{DAY_SEPARATOR}{text}"
+            current_items = list(unit_items)
         else:
             current = candidate
             current_items = current_items + unit_items
@@ -326,10 +373,13 @@ def render_assignments(
     now: datetime.datetime,
     limit: int = MESSAGE_LIMIT,
     header_key: str = "show_header",
+    horizon_days: int | None = HORIZON_DAYS,
 ) -> list[str]:
     """HTML message chunks for a list of items, each at most `limit` UTF-16 units.
 
     The text-only view of `render_assignment_chunks`, which `/show` uses.
     """
-    chunks = render_assignment_chunks(items, user_lang, now, limit, header_key)
+    chunks = render_assignment_chunks(
+        items, user_lang, now, limit, header_key, horizon_days
+    )
     return [text for text, _ in chunks]

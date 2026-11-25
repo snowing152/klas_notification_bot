@@ -68,16 +68,20 @@ Items are plain dicts (`type`, `subject`, `title`, `expire_at`, plus `entry`, th
 `(assignment_key, kind)` pair to record) and are rendered by `app/utils/assignment_render.py`
 as Telegram HTML, sent with `parse_mode="HTML"` per message. KLAS values are escaped there.
 
-- **New in KLAS** - the `/show` layout (day, subject, items, a "Later" block for deadlines
-  a week or more away) under the bold `new_assignments_header`
-  (`render_assignment_chunks(..., header_key=...)`).
+- **New in KLAS** - the `/show` layout (day, subject, items) under the bold
+  `new_assignments_header`, but with every day open: `/show` folds deadlines a week or
+  more away into a collapsed "Later" block, and most work is posted that far ahead, so the
+  alert would hide what it announces (`render_assignment_chunks(..., header_key=...,
+  horizon_days=None)`).
 - **Deadline reminder** - one bold `reminder_header` (urgency emoji from `TIME_THRESHOLDS`,
   the threshold in hours), then subject, then items, each with the exact time left. No day
   headers, no footer: everything in it is due within 24 hours (`render_reminder_chunks`).
 
 A message over 4096 UTF-16 units is split - new assignments at day boundaries, reminders at
 subject boundaries, a single day or subject larger than a message at item lines. Each chunk
-repeats the reminder header (or the day header) and comes with the items it carries.
+repeats the bold title (and the day header, when a day is split) and comes with the items
+it carries. Titles and subject names are capped at `MAX_TEXT_UNITS` (200 UTF-16 units,
+ending in `…`), so one line can never outgrow a message on its own.
 `_deliver` sends the chunks in order and calls `_record_sent` for a chunk's entries right
 after Telegram accepted it; the first refusal stops the rest. What was not sent stays
 unrecorded, so the next cycle selects only those items again: nothing is announced twice,

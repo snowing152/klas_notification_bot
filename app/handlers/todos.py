@@ -206,9 +206,11 @@ async def process_show_filter_callback(callback_query: types.CallbackQuery):
                 reply_markup=keyboard if len(chunks) == 1 else None,
                 parse_mode="HTML",
             )
-        except TelegramBadRequest:
-            # e.g. "message is not modified" - a harmless double-tap
-            pass
+        except TelegramBadRequest as e:
+            # A double-tap on the active filter is harmless; anything else
+            # (e.g. "can't parse entities") means the user saw no update.
+            if "message is not modified" not in str(e):
+                raise
         for i, extra in enumerate(chunks[1:]):
             is_last = i == len(chunks) - 2
             await callback_query.message.answer(

@@ -480,3 +480,38 @@ async def test_lists_are_sent_as_html_and_filters_share_one_row():
     assert callback.message.edit_text.call_args.kwargs["parse_mode"] == "HTML"
     rows = message.answer.call_args.kwargs["reply_markup"].inline_keyboard
     assert len(rows) == 1 and len(rows[0]) == 2
+
+
+async def test_a_repeated_filter_tap_is_silent():
+    from aiogram.exceptions import TelegramBadRequest
+
+    await _register("720")
+    api = FakeApi(todo_list=[make_subject("Algorithms", [("lectures", "Week 3", 10)])])
+    with patch_session(api):
+        await show_all_assignments(make_message(user_id="720"))
+        callback = make_callback("show_all", user_id="720")
+        callback.message.edit_text.side_effect = TelegramBadRequest(
+            method=None, message="Bad Request: message is not modified"
+        )
+        await process_show_filter_callback(callback)
+
+    callback.answer.assert_awaited_once_with()
+
+
+async def test_a_filter_tap_that_telegram_refuses_is_reported_not_swallowed(caplog):
+    from aiogram.exceptions import TelegramBadRequest
+
+    await _register("721")
+    api = FakeApi(todo_list=[make_subject("Algorithms", [("lectures", "Week 3", 10)])])
+    with patch_session(api):
+        await show_all_assignments(make_message(user_id="721"))
+        callback = make_callback("show_all", user_id="721")
+        callback.message.edit_text.side_effect = TelegramBadRequest(
+            method=None, message="Bad Request: can't parse entities"
+        )
+        await process_show_filter_callback(callback)
+
+    callback.answer.assert_awaited_once_with(
+        Strings.get("unexpected_error", Language.EN)
+    )
+    assert "can't parse entities" in caplog.text
