@@ -1,4 +1,7 @@
 import logging
+import unicodedata
+from typing import Optional
+
 from aiogram.filters import Command
 from aiogram import Dispatcher, F, types
 from aiogram.fsm.context import FSMContext
@@ -61,11 +64,29 @@ async def cmd_register(message: types.Message, state: FSMContext):
         await state.clear()
 
 
+def normalize_student_number(text: Optional[str]) -> Optional[str]:
+    """The student number in `text`, or None when it is not one.
+
+    NFKC folds full-width digits (common on Korean keyboards) to ASCII; only
+    ASCII digits are accepted, so the same value reaches the limiter and KLAS.
+    """
+    if not text:
+        return None
+    number = unicodedata.normalize("NFKC", text).strip()
+    return number if number.isascii() and number.isdigit() else None
+
+
 async def process_username(message: types.Message, state: FSMContext):
     try:
         user_lang = await get_user_language_with_fallback(message)
 
-        await state.update_data(username=message.text)
+        username = normalize_student_number(message.text)
+        if username is None:
+            # Not a number (or not text at all): stay in this step so they can retry.
+            await message.answer(Strings.get("student_number_digits_only", user_lang))
+            return
+
+        await state.update_data(username=username)
         await state.set_state(RegistrationStates.waiting_for_password)
         await message.answer(Strings.get("enter_password", user_lang))
         await message.delete()
@@ -78,6 +99,11 @@ async def process_username(message: types.Message, state: FSMContext):
 async def process_password(message: types.Message, state: FSMContext):
     """Check the credentials, save them, and log in with the push approval."""
     user_lang = Language.EN
+    if not message.text:
+        # A sticker or photo is no password; stay in this step.
+        user_lang = await get_user_language_with_fallback(message)
+        await message.answer(Strings.get("enter_password", user_lang))
+        return
     try:
         user_lang = await get_user_language_with_fallback(message)
         username = (await state.get_data())["username"]
@@ -99,9 +125,10 @@ async def process_password(message: types.Message, state: FSMContext):
 
     user_id = str(message.from_user.id)
 
-    if login_limiter.is_locked(username):
+    if not login_limiter.reserve(username):
         # KLAS locks an account after five wrong passwords; do not let a
-        # stranger's guesses at this number reach that.
+        # stranger's guesses at this number reach that. The slot is taken
+        # before the slow login so concurrent attempts count too.
         logging.warning(f"Refusing /register for {user_id}: too many failed logins")
         await message.answer(Strings.get("register_attempts_limited", user_lang))
         return
@@ -133,6 +160,7 @@ async def process_password(message: types.Message, state: FSMContext):
             student_photo_path(user_id).unlink(missing_ok=True)
         return saved
 
+    outcome = None
     try:
         outcome = await run_push_login(
             message.bot,
@@ -147,21 +175,21 @@ async def process_password(message: types.Message, state: FSMContext):
             await message.answer(Strings.get("registration_successful", user_lang))
             logging.info(f"User {user_id} registered successfully")
         elif outcome is LoginOutcome.WRONG_CREDENTIALS:
-            # Only a password KLAS rejected counts, never a network failure.
-            login_limiter.record_failure(username)
             await message.answer(Strings.get("invalid_credentials", user_lang))
-        if outcome in (
-            LoginOutcome.LOGGED_IN,
-            LoginOutcome.TIMED_OUT,
-            LoginOutcome.NO_DEVICE,
-        ):
-            # KLAS accepted the password before it asked for the push.
-            login_limiter.reset(username)
     except Exception as e:
         logging.error(
             f"Error in process_password: {type(e).__name__}: {e}", exc_info=True
         )
         await message.answer(Strings.get("registration_failed", user_lang))
+    finally:
+        # Only a password KLAS rejected counts, never a network failure.
+        # KLAS accepted it before it asked for the push in these outcomes.
+        login_limiter.finish(
+            username,
+            rejected=outcome is LoginOutcome.WRONG_CREDENTIALS,
+            accepted=outcome
+            in (LoginOutcome.LOGGED_IN, LoginOutcome.TIMED_OUT, LoginOutcome.NO_DEVICE),
+        )
 
 
 async def process_klas_relogin(callback_query: types.CallbackQuery):
@@ -271,7 +299,12 @@ async def process_library_username(message: types.Message, state: FSMContext):
     try:
         user_lang = await get_user_language_with_fallback(message)
 
-        await state.update_data(username=message.text)
+        text = message.text and unicodedata.normalize("NFKC", message.text).strip()
+        if not text:
+            await message.answer(Strings.get("library_enter_username", user_lang))
+            return
+
+        await state.update_data(username=text)
         await state.set_state(LibraryRegistrationStates.waiting_for_phone_number)
         await message.answer(Strings.get("enter_phone_number", user_lang))
         await message.delete()
@@ -284,7 +317,12 @@ async def process_library_phone_number(message: types.Message, state: FSMContext
     try:
         user_lang = await get_user_language_with_fallback(message)
 
-        await state.update_data(phone_number=message.text)
+        phone_number = message.text and message.text.strip()
+        if not phone_number:
+            await message.answer(Strings.get("enter_phone_number", user_lang))
+            return
+
+        await state.update_data(phone_number=phone_number)
         await state.set_state(LibraryRegistrationStates.waiting_for_password)
         await message.answer(Strings.get("library_enter_password", user_lang))
         await message.delete()
@@ -299,13 +337,33 @@ async def process_library_password(message: types.Message, state: FSMContext):
     The password never enters the FSM data, so an abandoned or crashed flow
     cannot leave it in storage."""
     user_lang = Language.EN
+    if not message.text:
+        # A sticker or photo is no password; stay in this step.
+        user_lang = await get_user_language_with_fallback(message)
+        await message.answer(Strings.get("library_enter_password", user_lang))
+        return
     try:
         user_lang = await get_user_language_with_fallback(message)
-
         user_data = await state.get_data()
         username = user_data["username"]
         phone_number = user_data["phone_number"]
         password = message.text
+    except Exception as e:
+        logging.error(f"Error in process_library_password: {type(e).__name__}: {e}")
+        await message.answer(Strings.get("unexpected_error", user_lang))
+        return
+    finally:
+        # Before any network call: the two library requests can take a minute
+        # each, and the password must not sit in the chat meanwhile. The state
+        # goes first: a user left in it would have their next message taken
+        # for a password.
+        await state.clear()
+        try:
+            await message.delete()
+        except Exception as e:
+            logging.error(f"Could not delete a password message: {type(e).__name__}: {e}")
+
+    try:
         user_id = str(message.from_user.id)
 
         encrypted_password = encrypt_password(password)
@@ -342,14 +400,6 @@ async def process_library_password(message: types.Message, state: FSMContext):
     except Exception as e:
         logging.error(f"Error in process_library_password: {type(e).__name__}: {e}")
         await message.answer(Strings.get("unexpected_error", user_lang))
-    finally:
-        # State first: if the delete fails, a user left in the state would
-        # have their next message taken for a password.
-        await state.clear()
-        try:
-            await message.delete()
-        except Exception as e:
-            logging.error(f"Could not delete a password message: {type(e).__name__}: {e}")
 
 
 def register_handlers(dp: Dispatcher):

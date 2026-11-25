@@ -508,9 +508,92 @@ def test_failures_expire_after_the_window(monkeypatch):
     clock = [1000.0]
     monkeypatch.setattr(login_limiter.time, "monotonic", lambda: clock[0])
     for _ in range(3):
-        login_limiter.record_failure("2024000000")
+        assert login_limiter.reserve("2024000000")
+        login_limiter.finish("2024000000", rejected=True)
     assert login_limiter.is_locked("2024000000")
 
     clock[0] += login_limiter.WINDOW_SECONDS + 1
 
     assert not login_limiter.is_locked("2024000000")
+
+
+def test_in_flight_attempts_count_like_failures():
+    from app.services import login_limiter
+
+    assert all(login_limiter.reserve("2024000001") for _ in range(3))
+    assert not login_limiter.reserve("2024000001")
+
+    login_limiter.finish("2024000001")  # a network failure frees its slot
+
+    assert login_limiter.reserve("2024000001")
+
+
+def test_the_tracked_numbers_are_capped(monkeypatch):
+    from app.services import login_limiter
+
+    monkeypatch.setattr(login_limiter, "MAX_TRACKED", 5)
+    for n in range(20):
+        login_limiter.reserve(str(n))
+        login_limiter.finish(str(n), rejected=True)
+
+    assert len(login_limiter._failures) == 5
+    assert "19" in login_limiter._failures and "0" not in login_limiter._failures
+
+
+async def test_concurrent_wrong_passwords_for_one_number_stop_at_three(monkeypatch):
+    """Check-then-act across the slow KLAS call let every account through."""
+    gate = asyncio.Event()
+
+    class SlowWrongApi(FakeApi):
+        async def attempt_login(self, login_id, password):
+            self.attempts += 1
+            await gate.wait()
+            return WRONG
+
+    api = SlowWrongApi()
+    monkeypatch.setattr(klas_login, "KwangwoonUniversityApi", lambda: api)
+    messages = [_message("wrong", user_id=100 + i) for i in range(6)]
+    tasks = [
+        asyncio.create_task(auth.process_password(m, _state())) for m in messages
+    ]
+    await asyncio.sleep(0.05)
+    gate.set()
+    await asyncio.gather(*tasks)
+
+    assert api.attempts == 3
+    refused = Strings.get("register_attempts_limited", Language.EN)
+    assert sum(1 for m in messages if m.answer.await_args.args[0] == refused) == 3
+
+
+async def test_a_full_width_student_number_is_normalised():
+    message = _message("\uff12\uff10\uff12\uff14\uff10\uff10\uff10\uff10\uff10\uff10 ")
+    state = AsyncMock()
+
+    await auth.process_username(message, state)
+
+    state.update_data.assert_awaited_once_with(username="2024000000")
+
+
+@pytest.mark.parametrize("text", [None, "", "abc", "2024 000", "20240000x", "\u0662\u0660"])
+async def test_a_bad_student_number_is_refused_and_the_state_is_kept(text):
+    message = _message(text)
+    state = AsyncMock()
+
+    await auth.process_username(message, state)
+
+    message.answer.assert_awaited_once_with(
+        Strings.get("student_number_digits_only", Language.EN)
+    )
+    state.set_state.assert_not_called()
+    state.clear.assert_not_called()
+
+
+async def test_a_non_text_password_keeps_the_state(fake_api):
+    api = fake_api()
+    message = _message(None)
+    state = _state()
+
+    await auth.process_password(message, state)
+
+    state.clear.assert_not_called()
+    assert api.attempts == 0

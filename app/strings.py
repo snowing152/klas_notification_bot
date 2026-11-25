@@ -27,6 +27,7 @@ More options live in the menu button in the bottom left of the chat.
 If something's not working, message me @bulochkaskefirochkom 💬 I'll sort it out quickly!
 """,
             "enter_username": "🎓 Please enter your student ID (I'll keep this secure)",
+            "student_number_digits_only": "A student number is digits only, like 2021123456. Please send it again 🔢",
             "enter_password": "🔑 Please enter your KLAS password (this will be encrypted)",
             "enter_phone_number": "📱 Please enter your phone number",
             "library_enter_username": "🎓 Please enter your library account username",
@@ -183,6 +184,7 @@ KLAS 과제를 추적하고 마감일 전에 알려드려요 🧭
 
 무언가 작동하지 않으면 @bulochkaskefirochkom 에게 연락주세요 💬 빠르게 도와드릴게요!""",
             "enter_username": "🎓 학번을 입력해주세요 (안전하게 보관됩니다)",
+            "student_number_digits_only": "학번은 숫자로만 되어 있어요. 예: 2021123456. 다시 입력해주세요 🔢",
             "enter_password": "🔑 KLAS 비밀번호를 입력해주세요 (암호화됩니다)",
             "enter_phone_number": "📱 전화번호를 입력해주세요",
             "library_enter_username": "🎓 도서관 계정 사용자 이름을 입력해주세요",
@@ -340,6 +342,7 @@ KLAS 과제를 추적하고 마감일 전에 알려드려요 🧭
 Если что-то не работает, напишите мне @bulochkaskefirochkom 💬 Я быстро всё исправлю!
 """,
             "enter_username": "🎓 Введите ваш студенческий номер",
+            "student_number_digits_only": "Студенческий номер состоит только из цифр, например 2021123456. Отправьте его ещё раз 🔢",
             "enter_password": "🔑 Введите ваш пароль от KLAS (будет зашифрован)",
             "enter_phone_number": "📱 Введите ваш номер телефона в формате 01012345678",
             "library_enter_username": "🎓 Введите ваш студенческий номер",

@@ -170,3 +170,41 @@ async def test_password_step_deletes_the_message_and_clears_the_state(monkeypatc
     message.delete.assert_awaited()
     state.clear.assert_awaited_once()
     state.update_data.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_password_message_is_deleted_before_any_network_call(monkeypatch):
+    message = make_message("pw")
+    state = make_state()
+    order = []
+    message.delete = AsyncMock(side_effect=lambda: order.append("delete"))
+    state.clear = AsyncMock(side_effect=lambda: order.append("clear"))
+
+    async def fake_get_secret_key(real_id, session=None):
+        order.append("network")
+        return "sixteencharkeyxx"
+
+    async def fake_library_login(std_number, phone, password, secret, session=None):
+        order.append("network")
+        return "auth-key"
+
+    monkeypatch.setattr(auth_handlers, "get_secret_key", fake_get_secret_key)
+    monkeypatch.setattr(auth_handlers, "library_login", fake_library_login)
+
+    await auth_handlers.process_library_password(message, state)
+
+    assert order[:2] == ["clear", "delete"]
+    assert order.index("delete") < order.index("network")
+
+
+@pytest.mark.asyncio
+async def test_a_non_text_library_password_keeps_the_state():
+    message = make_message(None)
+    state = make_state()
+
+    await auth_handlers.process_library_password(message, state)
+
+    state.clear.assert_not_called()
+    message.answer.assert_called_once_with(
+        Strings.get("library_enter_password", Language.EN)
+    )
