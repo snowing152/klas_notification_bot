@@ -54,8 +54,14 @@ receives at one moment ([KLAS.md](KLAS.md#the-client)); a `/show` during a cycle
 those slots and is slower for it.
 `_process_user` handles its own errors, so one broken account never aborts a cycle.
 
-Each cycle ends with one summary line — `Notification cycle finished: all N users
-checked, X notifications sent` at INFO, or the same with a failed count at WARNING. Each
+Each cycle ends with one summary line, built by `cycle_summary`: `Notification cycle
+finished: R read, W waiting for login, F failed, X notifications sent; oldest KLAS session
+H.Hh` — INFO, or WARNING when F is not zero. "Read" means KLAS was actually read for that
+user; "waiting for login" are users who have to approve a login or re-register, kept
+apart so they do not pass for served. The session age is the oldest live session among
+this cycle's users, a lower bound on how long KLAS keeps one, and is left out until a
+session start is known. `User <id> has to act before KLAS can be read` is logged once
+when a user starts waiting (again after a restart), not every cycle. Each
 delivery logs `Notification sent to <user id> (threshold=3h)` or `(new assignments)`:
 the user and the kind, deliberately never the assignment text. Quiet hours log
 `Notification held for <user id> (threshold=6h, quiet hours)` once when a hold begins,

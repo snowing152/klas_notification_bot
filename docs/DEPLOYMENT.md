@@ -138,7 +138,8 @@ Lines worth knowing:
 
 | Line | Means |
 |---|---|
-| `Notification cycle finished: ...` | one per cycle; INFO when every user was read, WARNING with a failed count otherwise |
+| `Notification cycle finished: ...` | one per cycle: users read, waiting for login, failed, notifications sent, oldest KLAS session age; WARNING when any failed ([NOTIFICATIONS.md](NOTIFICATIONS.md)) |
+| `User <id> has to act before KLAS can be read` | that user started waiting for a login; logged once per wait |
 | `Notification sent to <id> (...)` | a delivery, with its kind |
 | `Notification held for <id> (...)` / `Held notification ... dropped unsent` | quiet hours kept a reminder back / a held one stopped being due before it could go out |
 | `Uncaught exception` (critical) | the process died; at startup this is usually `app/config.py` refusing a variable |

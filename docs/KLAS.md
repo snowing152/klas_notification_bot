@@ -54,7 +54,8 @@ UpdateSession.do` resets it, which is what KLAS's own "연장" button calls.
 `None`, not `False`, when KLAS could not be reached, so a network fault never ends a kept
 session. Whether KLAS also has a hard limit on how long a session may live is not known
 yet: `klas_session.mark_session_dead` logs `KLAS session of <user> ended after <n> hours`
-to find out.
+to find out, and every cycle summary ends with `oldest KLAS session <n>h`, a lower bound
+that grows while no session has died.
 
 `app/services/klas_session.py` keeps one session per user between operations.
 `open_session(user)` restores the stored cookies, calls `keep_alive()`, and yields

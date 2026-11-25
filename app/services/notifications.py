@@ -302,6 +302,17 @@ _holding: dict[str, set[str]] = {}
 # or the same reminder would go out again every cycle until a write succeeds.
 _unrecorded: dict[str, list] = {}
 
+# Users who have to approve a login (or re-register) before KLAS can be read.
+# Same reasoning as _holding: it turns one log line per user per cycle into one
+# when the wait begins, and it is what the cycle summary counts. In memory on
+# purpose; after a restart each waiting user is announced once more.
+_waiting_for_login: set[str] = set()
+
+# When each user's KLAS session in use started, as last seen by a cycle. The
+# oldest one is a lower bound on how long KLAS keeps a session alive, which is
+# not known yet (docs/KNOWN_ISSUES.md).
+_session_since: dict = {}
+
 
 def _log_holds(user_id: str, held: set, attempted: set) -> None:
     """Say which holds began this cycle and which ended without a message.
@@ -428,9 +439,18 @@ async def _process_user(user) -> tuple[bool, int]:
                 # this shipped; where KLAS wants the push, each gets one prompt
                 # on the first daytime cycle. Not a failed check: counting
                 # everyone who has to act would make every summary a warning.
-                logging.info(f"User {user_id} has to act before KLAS can be read")
+                # Logged once when the user starts waiting; the cycle summary
+                # carries the count, so the line does not repeat every cycle.
+                if user_id not in _waiting_for_login:
+                    _waiting_for_login.add(user_id)
+                    logging.info(f"User {user_id} has to act before KLAS can be read")
+                _session_since.pop(user_id, None)
                 await _ask_for_login(user_id, user_lang, user_settings, access.status)
                 return True, 0
+
+            _waiting_for_login.discard(user_id)
+            if access.logged_in_at is not None:
+                _session_since[user_id] = access.logged_in_at
 
             todo_list = await access.api.get_todo_list()
 
@@ -577,6 +597,33 @@ async def run_notification_cycle(users) -> tuple[int, int]:
     return failed, sent
 
 
+def cycle_summary(users, failed: int, sent: int, now=None) -> tuple[int, str]:
+    """Build the log level and line that close a notification cycle.
+
+    "read" counts users whose assignments were actually read from KLAS; users
+    waiting for a login are listed apart, because counting them as checked
+    hid that most of the bot's users were not being served. The line is a
+    warning only when a check failed.
+    """
+    now = timezone.now() if now is None else now
+    user_ids = {user.user_id for user in users}
+    waiting = len(user_ids & _waiting_for_login)
+    read = len(user_ids) - waiting - failed
+
+    message = (
+        f"Notification cycle finished: {read} read, {waiting} waiting for login, "
+        f"{failed} failed, {sent} notifications sent"
+    )
+    # Only users still in this cycle: someone who left keeps an entry here
+    # until restart, and must not stretch the figure.
+    started = [_session_since[uid] for uid in user_ids if uid in _session_since]
+    if started:
+        hours = (now - min(started)).total_seconds() / 3600
+        message += f"; oldest KLAS session {hours:.1f}h"
+
+    return (logging.WARNING if failed else logging.INFO), message
+
+
 async def check_todos():
     while True:
         try:
@@ -586,16 +633,7 @@ async def check_todos():
             users = await get_all_users()
             failed_users, sent_count = await run_notification_cycle(users)
 
-            if failed_users:
-                logging.warning(
-                    f"Notification cycle finished: {len(users) - failed_users}"
-                    f"/{len(users)} users checked, {failed_users} failed, "
-                    f"{sent_count} notifications sent"
-                )
-            else:
-                logging.info(
-                    f"Notification cycle finished: all {len(users)} users checked, "
-                    f"{sent_count} notifications sent"
-                )
+            level, message = cycle_summary(users, failed_users, sent_count)
+            logging.log(level, message)
         except Exception as e:
             logging.error(f"Error in check_todos: {e}", exc_info=True)

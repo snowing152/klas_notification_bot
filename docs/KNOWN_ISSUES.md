@@ -36,7 +36,8 @@ covered by [Voice and other media are refused](#voice-and-other-media-are-refuse
   alive only while the bot runs. Whether KLAS also ends sessions after some fixed time,
   or when the student logs in elsewhere, is not known yet.
 - **Workaround:** keep deploys short. The log line `KLAS session of <user> ended after
-  <n> hours` shows how long sessions really live.
+  <n> hours` shows how long sessions really live; until one dies, `oldest KLAS session
+  <n>h` at the end of each `Notification cycle finished` line is the lower bound.
 - **Where:** `app/services/klas_session.py`, `_ask_for_login` in
   `app/services/notifications.py`.
 
