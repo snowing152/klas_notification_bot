@@ -93,10 +93,13 @@ async def process_settings_callback(callback_query: types.CallbackQuery):
                 Strings.get("settings_header", user_lang),
                 reply_markup=create_settings_keyboard(user_lang, settings_row),
             )
-        except TelegramBadRequest:
+        except TelegramBadRequest as e:
             # Telegram rejects an edit that changes nothing; the keyboard did
-            # change here, so this only fires on a double tap.
-            pass
+            # change here, so this only fires on a double tap. Any other
+            # refusal means the user saw no update and goes to the handler's
+            # error path.
+            if "message is not modified" not in str(e):
+                raise
 
         await callback_query.answer()
     except Exception as e:

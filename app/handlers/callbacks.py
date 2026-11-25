@@ -20,7 +20,34 @@ from app.keyboards import (
 from app.utils.language_utils import get_user_language_with_fallback
 
 
+async def _answer_safely(callback_query: types.CallbackQuery) -> None:
+    """Stop the button's spinner; a refusal is logged, never raised.
+
+    Telegram rejects an answer sent more than about a minute after the tap
+    ("query is too old"), and that must not turn a handled tap into an error
+    message.
+    """
+    try:
+        await callback_query.answer()
+    except TelegramBadRequest as e:
+        logging.warning(f"Could not answer callback query: {e}")
+
+
+async def _reply_safely(callback_query: types.CallbackQuery, text: str) -> None:
+    """Reply under the tapped message; a failure is logged, never raised, so an
+    error path cannot itself fail unhandled."""
+    try:
+        await callback_query.message.reply(text)
+    except Exception as e:
+        logging.error(f"Could not send the error reply: {e}")
+
+
 async def process_callback_query(callback_query: types.CallbackQuery):
+    user_lang = Language.EN
+    # Answered first and exactly once: the menu and news branches below can
+    # take long enough (a scrape, several sends) for Telegram to refuse a
+    # late answer, and no branch uses answer() to show text.
+    await _answer_safely(callback_query)
     try:
         user_lang = await get_user_language_with_fallback(callback_query)
 
@@ -46,7 +73,6 @@ async def process_callback_query(callback_query: types.CallbackQuery):
                 )
                 
                 logging.info(f"User {callback_query.from_user.id} selected donation amount: ${amount}")
-                await callback_query.answer()
                 return
                 
             except Exception as e:
@@ -114,8 +140,8 @@ async def process_callback_query(callback_query: types.CallbackQuery):
 
             except Exception as e:
                 logging.error(f"Failed to fetch news: {e}")
-                await callback_query.message.reply(
-                    Strings.get("failed_to_fetch_news", user_lang)
+                await _reply_safely(
+                    callback_query, Strings.get("failed_to_fetch_news", user_lang)
                 )
 
         elif callback_query.data == "filter_all_news":
@@ -141,15 +167,15 @@ async def process_callback_query(callback_query: types.CallbackQuery):
                     )
             except Exception as e:
                 logging.error(f"Failed to fetch news: {e}")
-                await callback_query.message.reply(
-                    Strings.get("failed_to_fetch_news", user_lang)
+                await _reply_safely(
+                    callback_query, Strings.get("failed_to_fetch_news", user_lang)
                 )
     except TelegramBadRequest as e:
         logging.error(f"Bad request: {e}")
-        await callback_query.message.reply(Strings.get("callback_error", user_lang))
+        await _reply_safely(callback_query, Strings.get("callback_error", user_lang))
     except Exception as e:
         logging.error(f"Error in process_callback_query: {e}")
-        await callback_query.message.reply(Strings.get("unexpected_error", user_lang))
+        await _reply_safely(callback_query, Strings.get("unexpected_error", user_lang))
 
 
 def register_handlers(dp: Dispatcher):

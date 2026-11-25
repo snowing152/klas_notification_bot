@@ -386,14 +386,36 @@ def test_an_oversized_title_is_shortened_so_the_message_still_fits():
     # Each "&" escapes to "&amp;", so an uncapped title of 4000 of them
     # renders to 20000 units - a message Telegram refuses on every cycle.
     huge = [item("homeworks", "S", "&" * 4000, hours=2), item("homeworks", "S" * 5000, "ok", hours=3)]
-    for chunk_text, chunk_items in render.render_assignment_chunks(huge, Language.EN, NOW):
+    assignment_chunks = render.render_assignment_chunks(huge, Language.EN, NOW)
+    for chunk_text, chunk_items in assignment_chunks:
         assert telegram_len(chunk_text) <= 4096
         balanced(chunk_text)
+    assert sum(len(chunk_items) for _, chunk_items in assignment_chunks) == 2
     reminder = render.render_reminder_chunks(huge, "Due soon", Language.EN, NOW)
     assert all(telegram_len(text) <= 4096 for text, _ in reminder)
     joined = "".join(text for text, _ in reminder)
     assert "…" in joined
     assert sum(len(chunk_items) for _, chunk_items in reminder) == 2
+
+
+def test_an_oversized_chunk_is_logged_not_silent(caplog):
+    # A limit this small cannot hold even one item next to the header.
+    with caplog.at_level("WARNING"):
+        chunks = render.render_assignment_chunks(
+            [item("homeworks", "S", "title", hours=2)], Language.EN, NOW, limit=20
+        )
+
+    assert any(telegram_len(text) > 20 for text, _ in chunks)
+    assert "exceeds" in caplog.text
+
+
+def test_no_warning_when_every_chunk_fits(caplog):
+    with caplog.at_level("WARNING"):
+        render.render_assignment_chunks(
+            [item("homeworks", "S", "title", hours=2)], Language.EN, NOW
+        )
+
+    assert "exceeds" not in caplog.text
 
 
 def test_shortening_never_splits_an_emoji_and_leaves_short_text_alone():
