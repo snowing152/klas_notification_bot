@@ -33,7 +33,7 @@ On disk outside the database, relative to the working directory:
 | The student's ID photo — a face | `images/photos/student_<telegram id>.jpg` | until `/unregister` |
 | The library QR pass — it encodes library credentials | `images/qr_<telegram id>_*.png` | deleted right after sending; one can be left behind by a crash |
 | Log lines with Telegram user ids and event kinds | `logs/kwbot.log` (not on Railway) | never rotated |
-| Deleted rows | free pages of `bot_users.db` | zeroed on delete (`PRAGMA secure_delete=ON`, set on every connection) |
+| Deleted rows | free pages of `bot_users.db` | rows deleted from now on are zeroed (`PRAGMA secure_delete=ON`, set on every connection); pages freed before that still hold old data until a one-time `VACUUM` ([DEPLOYMENT.md](DEPLOYMENT.md#one-time-vacuum-after-enabling-secure_delete)) |
 
 In memory only: credentials typed so far in a registration flow (for `/lregister` never the
 password, which is the last step and goes straight to the login), each user's assignment
@@ -71,14 +71,17 @@ factor, so it is never logged either. Only cookies for `klas.kw.ac.kr` are store
   `chat.type == "private"`; group, supergroup and channel updates reach no handler, so a
   prompt for credentials is never shown to a group.
 - **Anti-spam.** `AntiSpamMiddleware` throttles messages (2 seconds) and callback queries
-  (0.5 seconds) per user. It never throttles a message while the user has an FSM state: a
-  throttled message is neither handled nor deleted, which would leave a quickly pasted
-  password in the chat.
+  (0.5 seconds) per user. It exempts only plain text (not starting with `/`) typed in a
+  `RegistrationStates` or `LibraryRegistrationStates` step: a throttled message is neither
+  handled nor deleted, which would leave a quickly pasted password in the chat. Commands
+  are always throttled, even mid-registration.
 - **Failed `/register` logins.** `app/services/login_limiter.py` allows 3 passwords KLAS
   rejected per student number per hour, counted across all Telegram accounts, because
   KLAS locks an account after 5 and anyone can type anyone's student number. Only a real
-  rejection counts, never a network failure; a login KLAS accepts clears the count. It is
-  in memory, so a restart resets it. The price: someone who fails three times on
+  rejection counts, never a network failure; a login KLAS accepts clears the count. A slot
+  is reserved before the slow KLAS call, so attempts in flight count like failures and
+  several accounts typing at once cannot get past the limit. At most 1000 numbers are
+  tracked. It is in memory, so a restart resets it. The price: someone who fails three times on
   purpose blocks that student's `/register` for an hour (their saved login keeps working).
 - **SQL parameters** are hidden in SQLAlchemy errors (`hide_parameters=True`), so a logged
   `StatementError` carries no password hash, phone number or student number.
@@ -113,7 +116,9 @@ factor, so it is never logged either. Only cookies for `klas.kw.ac.kr` are store
 - **Delete the user's message after credential input**, as every step of `/register`
   and `/lregister` does.
 - **Never keep a password in FSM data.** `/register` and `/lregister` take the password as
-  their last step and use it from the message itself.
+  their last step and use it from the message itself. Both clear the state and delete the
+  message before the first network call. The student number must be ASCII digits after
+  NFKC normalisation.
 - **HTTP calls have a timeout and verify TLS.** Every `aiohttp` session sets
   `ClientTimeout(total=30)`; no call passes `ssl=False` or a context that skips
   verification. `kupis.kw.ac.kr` (book search) sends no intermediate certificate, so

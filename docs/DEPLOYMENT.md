@@ -87,6 +87,28 @@ The unit restarts the bot ten seconds after a failure. Its restart limit does no
 as written — see [KNOWN_ISSUES.md](KNOWN_ISSUES.md). `WorkingDirectory` matters:
 `images/` and, by default, the database and the key are all resolved against it.
 
+## One-time VACUUM after enabling secure_delete
+
+The bot sets `PRAGMA secure_delete=ON` on every connection, so rows deleted from now on
+are overwritten with zeros. Pages freed *before* that change still hold the old bytes
+(deleted users' encrypted passwords, phone numbers) in the free list of `bot_users.db`.
+`VACUUM` rewrites the file without them. Once, after deploying this change:
+
+1. Stop the bot.
+2. Back up `bot_users.db` (plus any `-wal`/`-shm` files next to it).
+3. `sqlite3 bot_users.db "VACUUM;"`, then start the bot.
+
+Do it on a copy first if unsure. Never run it while the bot is running.
+
+## Library TLS
+
+Book search verifies `kupis.kw.ac.kr`. The site sends no intermediate certificate, so
+the bot ships the Sectigo OV R36 intermediate (`app/certs/`), but the root above it,
+"Sectigo Public Server Authentication Root R46", must be in the host's CA bundle. It is
+in every current `ca-certificates` package. After a deploy, run one real book search
+(`/account`, then Find a book) to confirm; an "unable to get local issuer certificate"
+error in the log means the root is missing on that host.
+
 ## Logs
 
 Stdout always. On a Linux host that is not Railway, the bot additionally appends to
