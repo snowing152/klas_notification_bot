@@ -6,7 +6,7 @@ supports; where the live instance actually runs is in [HANDOFF.md](HANDOFF.md).
 ## Targets
 
 Two supported targets: systemd (`botdaemon.service`, placeholders to fill in) and Railway
-(`railway.json`; worker with no exposed port). On Railway a volume must be mounted and
+(service settings in the dashboard; worker with no exposed port). On Railway a volume must be mounted and
 `DATA_DIR` pointed at it, and `ENCRYPTION_KEY` must be set as a variable. `main.py`
 detects `RAILWAY_ENVIRONMENT` and skips the `logs/kwbot.log` file handler there; stdout
 logging is always on. (The check itself is `deployed_on_railway` in
@@ -42,8 +42,21 @@ empty `KW_TZ` or `DATABASE_URL` is taken literally and stops the bot at startup,
 
 ## Railway
 
-`railway.json` pins the Nixpacks builder, `python main.py` as the start command and an
-`ON_FAILURE` restart policy with at most 10 retries.
+The build and deploy settings live in the service's settings in the Railway dashboard,
+not in the repository:
+
+| Setting | Value |
+|---|---|
+| Builder | Nixpacks |
+| Start command | `python main.py` |
+| Restart policy | On Failure, at most 10 retries |
+
+They used to be in `railway.json`. Railway stops reading Config as Code files on
+2026-12-01, so the file was removed and its values set on the service instead. Railway's
+replacement, Infrastructure as Code (`.railway/railway.ts`), needs a Railway SDK package
+in the repository and its `apply` deletes resources left out of the file, the data volume
+included; for one service with three settings it was not worth it. If you change a setting
+in the dashboard, update the table above.
 
 1. **Attach a volume** and mount it, for example at `/data`. The container filesystem is
    wiped on every deploy; without a volume `bot_users.db` goes with it.
@@ -164,7 +177,7 @@ Cached ID photos (`images/photos/`) are written under the working directory, not
 
 ## Repository files
 
-`.gitignore` excludes `*.json` wholesale with `!railway.json` re-added — a new committed
-JSON file needs its own negation. It also ignores anything with `cache` in its name, so
+`.gitignore` excludes `*.json` wholesale — a new committed JSON file needs its own
+negation, as `.claude/settings.json` has. It also ignores anything with `cache` in its name, so
 avoid that word in a file that has to be committed. `git check-ignore -v <path>` says
 which rule caught a file.

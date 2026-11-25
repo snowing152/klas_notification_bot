@@ -55,7 +55,7 @@ creates tables and applies data fixes ([DATABASE.md](DATABASE.md)), `setup_handl
 registers handlers, `announce_pending()` is started as a task so polling does not wait
 on it, and then the two tasks above. All of it sits inside one `try`, and a failure is
 re-raised so the process exits non-zero — which is what lets the `ON_FAILURE` restart
-policy in `railway.json` and `Restart=on-failure` in `botdaemon.service` act on it. The
+policy of the Railway service and `Restart=on-failure` in `botdaemon.service` act on it. The
 `finally` closes the bot session.
 
 ## Handler registration order matters
